@@ -9,6 +9,9 @@ ROOT_DIR = os.path.join(Path(__file__).resolve().parent.parent, "dataset")
 #               Labeling Helper Functions
 # -------------------------------------------------------
 
+def read_csv(path: str) -> pd.DataFrame:
+    return pd.read_csv(path, low_memory=False).copy()
+
 def http_flood_labeler(input_csv: str, out_csv: str, start_time: int, end_time: int) -> None:
     """
     Labels HTTP flood attack traffic within a time window from a specific attack IP,
@@ -21,7 +24,7 @@ def http_flood_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new["Label"] = "Normal"
 
     mask = (
@@ -48,7 +51,7 @@ def fuzzing_labeler(input_csv: str, out_csv: str, start_time: int, end_time: int
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new["Label"] = "Normal"
 
     mask = (
@@ -75,7 +78,7 @@ def http_loris_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new["Label"] = "Normal"
 
     mask = (
@@ -108,7 +111,7 @@ def http_stream_labeler(input_csv: str, out_csv: str, start_time_1: int, end_tim
     - end_time_2: End of the second attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     mask = ((((new['frame.time_relative'] > start_time_1) & (new['frame.time_relative'] < end_time_1)) |
@@ -134,7 +137,7 @@ def quic_flood_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     mask = (
@@ -161,7 +164,7 @@ def quic_loris_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new["Label"] = "Normal"
 
     mask = (
@@ -191,7 +194,7 @@ def quic_enc_labeler(input_csv: str, out_csv: str, start_time: int, end_time: in
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     mask = (
@@ -217,7 +220,7 @@ def http_smuggler_labeler(input_csv: str, out_csv: str, start_time: int, end_tim
     - end_time: End of the attack time window.
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     mask = (
@@ -244,7 +247,7 @@ def http_concurrent_labeler(input_csv: str, out_csv: str, start_time: int, end_t
     - cond_control: Column name used to identify attack packets (either 'http.host' or 'http2.length').
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     mask = (
@@ -273,7 +276,7 @@ def http_pause_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     - cond_control: Column name used to identify attack packets (either 'http.host' or 'http2.length').
 
     """
-    new = pd.read_csv(input_csv, low_memory=False)
+    new = read_csv(input_csv)
     new['Label'] = "Normal"
 
     time_check = (new['frame.time_relative'] > start_time)

@@ -31,6 +31,16 @@ FEATURES = [
 # -------------------------------------------------------
 
 def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
+    """
+    Reads and merges multiple CSV files into a single DataFrame,
+    keeping only the features defined in the FEATURES list.
+
+    Input:
+    - csv_files: List of file paths to the labeled CSV files to be processed.
+
+    Output:
+    - merged_data: A single merged DataFrame containing only the selected feature columns.
+    """
     merged_data = pd.DataFrame()
     for i, fileName in enumerate(csv_files):
         cprint(f"Progress: {i + 1}/{len(csv_files)} - {os.path.basename(fileName)}", "green")
@@ -43,6 +53,17 @@ def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
 
 
 def save_merged_csv(data: pd.DataFrame) -> str:
+    """
+    Saves a DataFrame to a CSV file in the output directory,
+    creating the directory if it does not exist.
+
+    Input:
+    - data: The merged and filtered DataFrame to be saved.
+
+    Output:
+    - output_path: The full file path where the CSV was saved.
+
+    """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     output_path = os.path.join(OUTPUT_DIR, "pcap-all.csv")
     data.to_csv(output_path, index=False)
@@ -55,9 +76,7 @@ def save_merged_csv(data: pd.DataFrame) -> str:
 # -------------------------------------------------------
 
 def filtering() -> str:
-
     print("\n####### Filtering #######")
-    print("Filtering dataset data...")
 
     print("Looking for CSV files in:", DATASET_DIR)
     csv_files = glob.glob(os.path.join(DATASET_DIR, "**", "*-l.csv"),
@@ -67,6 +86,7 @@ def filtering() -> str:
     for file in csv_files:
         print(f"\t - {file}")
 
+    print("\nFiltering dataset data...")
     data = merge_and_filter_data(csv_files)
     print("Filtering Complete!\n")
     return save_merged_csv(data)
