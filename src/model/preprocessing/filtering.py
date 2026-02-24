@@ -26,9 +26,9 @@ FEATURES = [
 ]
 
 
-# -------------------------------------------------------
-#               Filtering Helper Functions
-# -------------------------------------------------------
+# =====================================
+# ---  Filtering Helper Functions   ---
+# =====================================
 
 def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
     """
@@ -71,9 +71,9 @@ def save_merged_csv(data: pd.DataFrame) -> str:
     return output_path
 
 
-# -------------------------------------------------------
-#               Main Filtering Process
-# -------------------------------------------------------
+# =====================================
+# ---   Main Filtering Process      ---
+# =====================================
 
 def filtering() -> str:
     print("\n####### Filtering #######")

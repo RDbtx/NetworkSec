@@ -26,9 +26,9 @@ TO_SCALE_COLUMNS = [
     "http.content_length"
 ]
 
-# -------------------------------------------------------
-#               Scaling Helper Functions
-# -------------------------------------------------------
+# =====================================
+# ---   Scaling Helper Functions    ---
+# =====================================
 
 def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -45,7 +45,7 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     for col in FLAG_COLS:
         df[col] = df[col].fillna(-1)
     df = df.fillna(0)
-    print("Done filling NaN cells")
+    print("Done filling NaN cells!")
     return df
 
 
@@ -61,10 +61,11 @@ def resolve_compound_values(df: pd.DataFrame) -> pd.DataFrame:
     """
     sys.setrecursionlimit(5000)
     obj_cols = [col for col in df.select_dtypes(include='object').columns if col != 'Label']
+    print("\nResolving compound values:")
     for col in obj_cols:
         df[col] = df[col].map(pd.eval)
-        print(f"Done calc in: {col}")
-    print("Done resolving compound values")
+        print(f" - Done calculations in {col}")
+    print("Done resolving compound values!")
     return df
 
 
@@ -79,7 +80,7 @@ def one_hot_encode(df: pd.DataFrame) -> pd.DataFrame:
     - df: DataFrame with FLAG_COLS replaced by their OHE binary columns.
     """
     df = pd.get_dummies(df, columns=FLAG_COLS)
-    print("Done OHE")
+    print("Done OHE!")
     return df
 
 
@@ -98,12 +99,12 @@ def minmax_scale(df: pd.DataFrame) -> pd.DataFrame:
     df[TO_SCALE_COLUMNS] = df[TO_SCALE_COLUMNS].astype(float)
     df[TO_SCALE_COLUMNS] = scaler.fit_transform(df[TO_SCALE_COLUMNS])
     df.insert(len(df.columns) - 1, "Label", df.pop("Label"))
-    print("Done MinMax scaling")
+    print("Done MinMax scaling!")
     return df
 
-# -------------------------------------------------------
-#               Main Scaling Process
-# -------------------------------------------------------
+# =====================================
+# ---      Main Scaling Process     ---
+# =====================================
 
 def scaling(csv_dir: str) -> None:
     """
@@ -120,7 +121,7 @@ def scaling(csv_dir: str) -> None:
 
     print("Reading:", csv_dir)
     df = pd.read_csv(csv_dir, sep=",", on_bad_lines='skip', encoding="ISO-8859-1", low_memory=False)
-    print("Done reading CSV")
+    print("Done reading CSV!")
 
     df = fill_missing_values(df)
     df = resolve_compound_values(df)

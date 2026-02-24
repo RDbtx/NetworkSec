@@ -5,9 +5,9 @@ from pathlib import Path
 
 ROOT_DIR = os.path.join(Path(__file__).resolve().parent.parent, "dataset")
 
-# -------------------------------------------------------
-#               Labeling Helper Functions
-# -------------------------------------------------------
+# =====================================
+# ---   Labeling Helper Functions   ---
+# =====================================
 
 def read_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False).copy()
@@ -293,9 +293,9 @@ def http_pause_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     new.to_csv(out_csv, index=False)
 
 
-# -------------------------------------------------------
-#               Main Labeling Process
-# -------------------------------------------------------
+# =====================================
+# ---     Main Labeling Process     ---
+# =====================================
 
 def labeling():
     print("\n####### Labeling #######")
