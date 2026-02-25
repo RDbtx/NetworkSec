@@ -1,15 +1,54 @@
 import time
+import os
 import joblib
 import numpy as np
+import pandas as pd
 import xgboost as xgb
 from performances import model_performances_multiclass, model_performances_report_generation
+from sklearn.preprocessing import LabelEncoder
 
 MODEL_NAME = "XGBOOST"
+INPUT_PATH = "./output/"
 
+# =====================================
+# ---       Label mapping           ---
+# =====================================
+
+LABEL_MAP = {
+    "Normal": "Normal",
+    "http-flood": "DDoS-flooding",
+    "http-stream": "DDoS-flooding",
+    "quic-flood": "DDoS-flooding",
+    "http-loris": "DDoS-loris",
+    "quic-loris": "DDoS-loris",
+    "fuzzing": "Transport-layer",
+    "quic-enc": "Transport-layer",
+    "http-smuggle": "HTTP/2-attacks",
+    "http2-concurrent": "HTTP/2-attacks",
+    "http2-pause": "HTTP/2-attacks",
+}
 
 # =====================================
 # ---    Main utility functions     ---
 # =====================================
+
+def extract_data() -> pd.DataFrame:
+    input_csv = os.path.join(INPUT_PATH, "pcap-all-final.csv")
+    print("Loading dataset...")
+    df = pd.read_csv(input_csv, low_memory=False)
+    df["Label"] = df["Label"].map(LABEL_MAP)
+    unmapped = df["Label"].isnull().sum()
+    if unmapped > 0:
+        print(f"Warning: {unmapped} rows had unmapped labels and will be dropped.")
+        df = df.dropna(subset=["Label"])
+
+    print("\nClass distributions:")
+    print(df["Label"].value_counts())
+    encoder = LabelEncoder()
+    df["Label"] = encoder.fit_transform(df["Label"])
+    labels_names = list(encoder.classes_)
+    print(f"\nClasses: {labels_names}")
+    return df
 
 def save_model(model, encoder, model_name: str) -> None:
     """
