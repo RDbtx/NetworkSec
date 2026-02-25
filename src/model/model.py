@@ -31,8 +31,7 @@ xgboost_model = xgb.XGBClassifier(
 # =====================================
 
 if __name__ == "__main__":
-
-    df = extract_data()
+    df, encoder, labels_names = extract_data()
 
     X = df.drop("Label", axis=1).values
     Y = df["Label"].values

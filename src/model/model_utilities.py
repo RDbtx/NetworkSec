@@ -32,7 +32,7 @@ LABEL_MAP = {
 # ---    Main utility functions     ---
 # =====================================
 
-def extract_data() -> pd.DataFrame:
+def extract_data():
     input_csv = os.path.join(INPUT_PATH, "pcap-all-final.csv")
     print("Loading dataset...")
     df = pd.read_csv(input_csv, low_memory=False)
@@ -48,7 +48,7 @@ def extract_data() -> pd.DataFrame:
     df["Label"] = encoder.fit_transform(df["Label"])
     labels_names = list(encoder.classes_)
     print(f"\nClasses: {labels_names}")
-    return df
+    return df, encoder, labels_names
 
 def save_model(model, encoder, model_name: str) -> None:
     """
