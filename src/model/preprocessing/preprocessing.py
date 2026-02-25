@@ -5,6 +5,7 @@ from labeling import labeling
 if __name__ == "__main__":
     print("Starting preprocessing...\n")
     #labeling()  # adds Label to raw CSVs
-    output = filtering()  # merges labeled CSVs, returns path
+    # output = filtering()  # merges labeled CSVs, returns path
+    output = "/Users/riccardo/Desktop/NetworkSec/src/model/output/pcap-all.csv"
     scaling(output)  # scales and encodes, saves final CSV
     print("\nFinished!")

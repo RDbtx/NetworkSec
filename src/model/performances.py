@@ -1,5 +1,5 @@
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, classification_report, \
-    precision_score, recall_score, hamming_loss, f1_score, roc_auc_score
+    precision_score, recall_score, f1_score, roc_auc_score
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -42,8 +42,6 @@ def model_performances_report_generation(accuracy, precision, recall, f1_macro, 
     - scenario:    'TRAINING' or 'TESTING'.
     - model_name:  Name of the model (used for file naming).
 
-    Output:
-    - None. Saves report to ../Results/xgboost/reports/.
     """
     report_dir = os.path.join(XGBOOST_RESULT_DIR, "reports")
     os.makedirs(report_dir, exist_ok=True)

@@ -17,8 +17,8 @@ def save_model(model, encoder, model_name: str) -> None:
     inside the ../Models/ directory.
 
     Input:
-    - model:      Trained XGBClassifier.
-    - encoder:    Fitted LabelEncoder used to encode/decode class labels.
+    - model: Trained XGBClassifier.
+    - encoder: Fitted LabelEncoder used to encode/decode class labels.
     - model_name: Base name for the saved file.
 
     """
@@ -34,14 +34,14 @@ def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray):
     """
     Trains the XGBoost model and evaluates performance on the training set.
 
-    Input:
-    - model:        XGBClassifier instance to train.
+    Inputs:
+    - model: XGBClassifier instance to train.
     - labels_names: List of class name strings (decoded from LabelEncoder).
-    - x:            np.ndarray of training features.
-    - y:            np.ndarray of encoded training labels (integers).
+    - x: np.ndarray of training features.
+    - y: np.ndarray of encoded training labels (integers).
 
-    Output:
-    - model:             The trained XGBClassifier.
+    Outputs:
+    - model: The trained classifier.
     - train_predictions: np.ndarray of predicted class indices on the training set.
 
     """
@@ -72,10 +72,10 @@ def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray):
     Evaluates the trained XGBoost model on the test set and saves a performance report.
 
     Input:
-    - model:        Trained XGBClassifier.
+    - model: Trained model.
     - labels_names: List of class name strings (decoded from LabelEncoder).
-    - x:            np.ndarray of test features.
-    - y:            np.ndarray of encoded test labels (integers).
+    - x: np.ndarray of test features.
+    - y: np.ndarray of encoded test labels (integers).
 
     Output:
     - test_predictions: np.ndarray of predicted class indices on the test set.
