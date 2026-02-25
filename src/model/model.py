@@ -1,10 +1,5 @@
-import os
-import numpy as np
-import pandas as pd
 import xgboost as xgb
-from pathlib import Path
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 from model_utilities import model_train, model_test, save_model
 from src.model.model_utilities import extract_data
 

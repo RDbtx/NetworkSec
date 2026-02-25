@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-XGBOOST_RESULT_DIR = "../Results/xgboost/"
+XGBOOST_RESULT_DIR = "output/Results/xgboost/"
 
 
 def to_class_indices(y: np.ndarray) -> np.ndarray:

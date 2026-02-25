@@ -1,0 +1,31 @@
+
+----XGBOOST TRAINING PERFORMANCES----
+Accuracy:      0.9510
+Precision:     0.8157
+Recall:        0.6797
+F1 micro:      0.9510
+F1 macro:      0.7018
+AUC (macro):   0.9608
+
+Classification Report:
+
+                 precision    recall  f1-score   support
+
+  DDoS-flooding       0.77      0.55      0.64    336090
+     DDoS-loris       0.63      0.08      0.15     59305
+ HTTP/2-attacks       0.89      0.99      0.94     70090
+         Normal       0.96      0.99      0.97   5151108
+Transport-layer       0.83      0.79      0.81     16832
+
+       accuracy                           0.95   5633425
+      macro avg       0.82      0.68      0.70   5633425
+   weighted avg       0.94      0.95      0.94   5633425
+
+
+Confusion Matrix:
+
+[[ 184908     287       0  150869      26]
+ [   2851    4969       0   51482       3]
+ [      0       0   69234     856       0]
+ [  52315    2661    8441 5084972    2719]
+ [      0       0       3    3540   13289]]

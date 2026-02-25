@@ -3,7 +3,6 @@ import os
 import joblib
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 from performances import model_performances_multiclass, model_performances_report_generation
 from sklearn.preprocessing import LabelEncoder
 
@@ -62,7 +61,7 @@ def save_model(model, encoder, model_name: str) -> None:
 
     """
     import os
-    models_dir = "../Models/"
+    models_dir = "output/Models/"
     os.makedirs(models_dir, exist_ok=True)
     save_path = models_dir + f"{model_name}_classifier.joblib"
     joblib.dump({"model": model, "encoder": encoder}, save_path)
