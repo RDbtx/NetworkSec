@@ -43,7 +43,7 @@ def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
     """
     merged_data = pd.DataFrame()
     for i, fileName in enumerate(csv_files):
-        cprint(f"Progress: {i + 1}/{len(csv_files)} - {os.path.basename(fileName)}", "green")
+        cprint(f" - Progress: {i + 1}/{len(csv_files)} | {os.path.basename(fileName)}", "green")
         data = pd.read_csv(fileName, sep=',', on_bad_lines='skip', low_memory=False)
         new = data.filter(FEATURES)
         merged_data = pd.concat([merged_data, new], ignore_index=True)

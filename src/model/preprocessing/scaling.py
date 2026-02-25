@@ -43,7 +43,7 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     - df (pd.DataFrame): DataFrame with all NaN values filled.
 
     """
-    print("Filling missing values...\n")
+    print("\nFilling missing values...")
     for col in FLAG_COLS:
         df[col] = df[col].fillna(-1)
     df = df.fillna(0)
@@ -62,7 +62,7 @@ def resolve_compound_values(df: pd.DataFrame) -> pd.DataFrame:
     - df: DataFrame with all compound string values resolved to numeric.
     """
     sys.setrecursionlimit(5000)
-    print("Started resolving compound values...")
+    print("\nStarted resolving compound values...")
     obj_cols = [c for c in df.select_dtypes(include="object").columns if c != "Label"]
     total = len(obj_cols)
     for i, col in enumerate(obj_cols, start=1):
@@ -70,7 +70,7 @@ def resolve_compound_values(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].apply(lambda v: pd.eval(v) if isinstance(v, str) else v)
         except Exception:
             pass
-        print(f" - [{i}/{total}] Done calculations in {col}")
+        print(f" - Progress: {i}/{total} | calculations in {col} done!")
     print("Done resolving all compound values!")
     return df
 
@@ -85,7 +85,7 @@ def one_hot_encode(df: pd.DataFrame) -> pd.DataFrame:
     Outputs:
     - df: DataFrame with FLAG_COLS replaced by their OHE binary columns.
     """
-    print("Starting One-Hot Encoding...\n")
+    print("Starting One-Hot Encoding...")
     df = pd.get_dummies(df, columns=FLAG_COLS)
     print("Done One-Hot Encoding!")
     return df
@@ -102,7 +102,7 @@ def minmax_scale(df: pd.DataFrame) -> pd.DataFrame:
     Output:
     - df: DataFrame with TO_SCALE_COLUMNS normalized and Label as last column.
     """
-    print("Starting MinMax Scaling...\n")
+    print("\nStarting MinMax Scaling...")
     scaler = MinMaxScaler()
     df[TO_SCALE_COLUMNS] = df[TO_SCALE_COLUMNS].astype(float)
     df[TO_SCALE_COLUMNS] = scaler.fit_transform(df[TO_SCALE_COLUMNS])
@@ -128,7 +128,7 @@ def scaling(csv_dir: str) -> None:
     print("\n####### Scaling #######")
     output_path = os.path.join(os.path.dirname(csv_dir), "pcap-all-final.csv")
 
-    print("Reading:", csv_dir)
+    print("\nReading:", csv_dir)
     df = pd.read_csv(csv_dir, sep=",", on_bad_lines='skip', encoding="ISO-8859-1", low_memory=False)
     print("Done reading CSV!")
 
