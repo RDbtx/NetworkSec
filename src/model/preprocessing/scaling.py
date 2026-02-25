@@ -26,6 +26,7 @@ TO_SCALE_COLUMNS = [
     "http.content_length"
 ]
 
+
 # =====================================
 # ---   Scaling Helper Functions    ---
 # =====================================
@@ -42,6 +43,7 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     - df (pd.DataFrame): DataFrame with all NaN values filled.
 
     """
+    print("Filling missing values...\n")
     for col in FLAG_COLS:
         df[col] = df[col].fillna(-1)
     df = df.fillna(0)
@@ -60,12 +62,16 @@ def resolve_compound_values(df: pd.DataFrame) -> pd.DataFrame:
     - df: DataFrame with all compound string values resolved to numeric.
     """
     sys.setrecursionlimit(5000)
-    obj_cols = [col for col in df.select_dtypes(include='object').columns if col != 'Label']
-    print("\nResolving compound values:")
-    for col in obj_cols:
-        df[col] = df[col].map(pd.eval)
-        print(f" - Done calculations in {col}")
-    print("Done resolving compound values!")
+    print("Started resolving compound values...")
+    obj_cols = [c for c in df.select_dtypes(include="object").columns if c != "Label"]
+    total = len(obj_cols)
+    for i, col in enumerate(obj_cols, start=1):
+        try:
+            df[col] = df[col].apply(lambda v: pd.eval(v) if isinstance(v, str) else v)
+        except Exception:
+            pass
+        print(f" - [{i}/{total}] Done calculations in {col}")
+    print("Done resolving all compound values!")
     return df
 
 
@@ -79,8 +85,9 @@ def one_hot_encode(df: pd.DataFrame) -> pd.DataFrame:
     Outputs:
     - df: DataFrame with FLAG_COLS replaced by their OHE binary columns.
     """
+    print("Starting One-Hot Encoding...\n")
     df = pd.get_dummies(df, columns=FLAG_COLS)
-    print("Done OHE!")
+    print("Done One-Hot Encoding!")
     return df
 
 
@@ -95,12 +102,14 @@ def minmax_scale(df: pd.DataFrame) -> pd.DataFrame:
     Output:
     - df: DataFrame with TO_SCALE_COLUMNS normalized and Label as last column.
     """
+    print("Starting MinMax Scaling...\n")
     scaler = MinMaxScaler()
     df[TO_SCALE_COLUMNS] = df[TO_SCALE_COLUMNS].astype(float)
     df[TO_SCALE_COLUMNS] = scaler.fit_transform(df[TO_SCALE_COLUMNS])
     df.insert(len(df.columns) - 1, "Label", df.pop("Label"))
     print("Done MinMax scaling!")
     return df
+
 
 # =====================================
 # ---      Main Scaling Process     ---
