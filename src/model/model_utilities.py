@@ -61,7 +61,7 @@ def save_model(model, encoder, model_name: str) -> None:
 
     """
     import os
-    models_dir = "output/Models/"
+    models_dir = "output/saved_models/"
     os.makedirs(models_dir, exist_ok=True)
     save_path = models_dir + f"{model_name}_classifier.joblib"
     joblib.dump({"model": model, "encoder": encoder}, save_path)

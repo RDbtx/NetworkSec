@@ -3,14 +3,17 @@ import os
 import time
 import joblib
 import pandas as pd
+import pathlib
 from sklearn.preprocessing import MinMaxScaler
-from model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
+from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from data_extraction import LiveCapture
 
-MODEL_PATH = "./model/output/Models/XGBOOST_classifier.joblib"
+SRC_PATH = pathlib.Path(__file__).parent.parent
+MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/XGBOOST_classifier.joblib")
 
 # Classes that trigger a block action
 ATTACK_CLASSES = {"DDoS-flooding", "DDoS-loris", "HTTP/2-attacks"}
+
 
 # ===========================================
 # ---       Input Data Preprocessor       ---
@@ -26,7 +29,7 @@ class LivePreprocessor:
         self._warmup_buffer: list = []
 
         # checks which columns to oh encode
-        df = pd.read_csv("./model/output/pcap-all-final.csv", nrows=0)
+        df = pd.read_csv("../model/output/pcap-all-final.csv", nrows=0)
         self.cols = [c for c in df.columns if c != "Label"]
         print(f"[Preprocessor] Loaded {len(self.cols)} OHE columns")
 
@@ -129,8 +132,6 @@ class Firewall:
         self.label_names: list = list(self.encoder.classes_)
         print(f"[Firewall] Classes: {self.label_names}")
 
-        # OHE columns live next to the model file
-        ohe_path = os.path.join(os.path.dirname(model_path), "ohe_columns.txt")
         self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
 
         # Capture

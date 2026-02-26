@@ -4,7 +4,7 @@ import queue
 import threading
 import platform
 from typing import Optional
-from model.preprocessing.filtering import FEATURES
+from src.model.preprocessing.filtering import FEATURES
 
 # Mapping: feature name → pyshark layer.field path
 FIELD_MAP = {
