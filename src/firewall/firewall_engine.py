@@ -127,10 +127,10 @@ class Firewall:
         self.blocked_ips: set = set()
 
         # Load model + encoder
-        model_name = os.path.basename(model_path.removesuffix(".joblib"))
+        model = os.path.basename(model_path.removesuffix(".joblib"))
         print(f"[Firewall] Loading model...")
         checkpoint = joblib.load(model_path)
-        print(f"[Firewall] {model_name} loaded!")
+        print(f"[Firewall] Loaded model [{model}]!")
         self.model = checkpoint["model"]
         self.encoder = checkpoint["encoder"]
         self.label_names: list = list(self.encoder.classes_)
