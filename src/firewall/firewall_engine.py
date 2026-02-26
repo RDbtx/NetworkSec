@@ -1,4 +1,3 @@
-import argparse
 import os
 import time
 import joblib
@@ -10,6 +9,7 @@ from data_extraction import LiveCapture
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
 MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/XGBOOST_classifier.joblib")
+DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 
 # Classes that trigger a block action
 ATTACK_CLASSES = {"DDoS-flooding", "DDoS-loris", "HTTP/2-attacks"}
@@ -29,9 +29,9 @@ class LivePreprocessor:
         self._warmup_buffer: list = []
 
         # checks which columns to oh encode
-        df = pd.read_csv("../model/output/pcap-all-final.csv", nrows=0)
-        self.cols = [c for c in df.columns if c != "Label"]
-        print(f"[Preprocessor] Loaded {len(self.cols)} OHE columns")
+        df = pd.read_csv(DATASET_PATH, nrows=0)
+        self.ohe_columns = [c for c in df.columns if c != "Label"]
+        print(f"[Preprocessor] Loaded {len(self.ohe_columns)} model columns")
 
     # ===========================================
     # ---   Preprocessing Helper Functions    ---
@@ -71,10 +71,15 @@ class LivePreprocessor:
 
     def fit_scaler(self, batch: pd.DataFrame):
         present_scale_cols = [c for c in TO_SCALE_COLUMNS if c in batch.columns]
+        if not present_scale_cols:
+            raise ValueError(
+                "No scale columns found in warmup batch. "
+                "Likely column mismatch or OHE reindex removed everything. "
+                f"batch.columns={list(batch.columns)[:20]}... (total {len(batch.columns)})"
+            )
         batch[present_scale_cols] = batch[present_scale_cols].astype(float)
         self.scaler.fit(batch[present_scale_cols])
         self.scaler_fitted = True
-        print(f"[Preprocessor] Scaler fitted on {len(batch)} warmup packets.")
 
     def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -245,27 +250,12 @@ class Firewall:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Real-time XGBoost firewall")
-    parser.add_argument("--interface", "-i", default="en0",
-                        help="Network interface to sniff (default: eth0)")
-    parser.add_argument("--model", "-m", default=MODEL_PATH,
-                        help=f"Path to trained model joblib (default: {MODEL_PATH})")
-    parser.add_argument("--filter", "-f", default=None,
-                        help="BPF capture filter, e.g. 'tcp or udp port 443'")
-    parser.add_argument("--block", "-b", action="store_true",
-                        help="Enable iptables blocking of attacking source IPs (requires root)")
-    parser.add_argument("--warmup", "-w", type=int, default=500,
-                        help="Number of packets to warm up the MinMax scaler (default: 500)")
-    parser.add_argument("--batch", type=int, default=1,
-                        help="Inference batch size — larger = faster but more latency (default: 1)")
-    args = parser.parse_args()
-
     fw = Firewall(
-        model_path=args.model,
-        interface=args.interface,
-        bpf_filter=args.filter,
-        block=args.block,
-        warmup_packets=args.warmup,
-        batch_size=args.batch,
+        model_path=MODEL_PATH,
+        interface="en0",
+        bpf_filter=None,
+        block=True,
+        warmup_packets=500,
+        batch_size=1,
     )
     fw.run()
