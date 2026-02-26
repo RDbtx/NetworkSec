@@ -132,7 +132,7 @@ class LiveCapture:
     def start(self):
         self.thread = threading.Thread(target=self.capture_loop, daemon=True)
         self.thread.start()
-        print(f"[LiveCapture] Started on interface '{self.interface}'"
+        print(f"[LiveCapture] Live Capture started on interface [{self.interface}]!"
               + (f" with filter '{self.bpf_filter}'" if self.bpf_filter else ""))
 
     def stop(self):
