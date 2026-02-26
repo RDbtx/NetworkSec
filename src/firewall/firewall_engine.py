@@ -5,7 +5,7 @@ import pandas as pd
 import pathlib
 from sklearn.preprocessing import MinMaxScaler
 from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
-from data_extraction import LiveCapture
+from src.firewall.data_extraction import LiveCapture
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
 MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/XGBOOST_classifier.joblib")
@@ -71,12 +71,6 @@ class LivePreprocessor:
 
     def fit_scaler(self, batch: pd.DataFrame):
         present_scale_cols = [c for c in TO_SCALE_COLUMNS if c in batch.columns]
-        if not present_scale_cols:
-            raise ValueError(
-                "No scale columns found in warmup batch. "
-                "Likely column mismatch or OHE reindex removed everything. "
-                f"batch.columns={list(batch.columns)[:20]}... (total {len(batch.columns)})"
-            )
         batch[present_scale_cols] = batch[present_scale_cols].astype(float)
         self.scaler.fit(batch[present_scale_cols])
         self.scaler_fitted = True
