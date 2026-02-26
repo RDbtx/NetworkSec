@@ -9,7 +9,7 @@ from src.firewall.data_extraction import LiveCapture
 from collections import defaultdict, deque
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
-MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/XGBOOST_classifier.joblib")
+MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/Blackwall.joblib")
 DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 
 # Classes that trigger a block action
@@ -35,7 +35,6 @@ class LivePreprocessor:
         # checks which columns to oh encode
         df = pd.read_csv(DATASET_PATH, nrows=0)
         self.ohe_columns = [c for c in df.columns if c != "Label"]
-        print(f"[Preprocessor] Loaded {len(self.ohe_columns)} model columns")
 
     # ===========================================
     # ---   Preprocessing Helper Functions    ---
@@ -128,12 +127,13 @@ class Firewall:
         self.blocked_ips: set = set()
 
         # Load model + encoder
-        print(f"[Firewall] Loading model from {model_path} ...")
+        model_name = os.path.basename(model_path.removesuffix(".joblib"))
+        print(f"[Firewall] Loading model...")
         checkpoint = joblib.load(model_path)
+        print(f"[Firewall] {model_name} loaded!")
         self.model = checkpoint["model"]
         self.encoder = checkpoint["encoder"]
         self.label_names: list = list(self.encoder.classes_)
-        print(f"[Firewall] Classes: {self.label_names}")
 
         self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
 
@@ -231,12 +231,12 @@ class Firewall:
             count = self.stats.get(name, 0)
             pct = 100 * count / total if total else 0
             print(f"  {name:<22} {count:>6}  ({pct:.1f}%)")
-        print("\n#### Currently blockde ips ####")
+        print("\n--- Currently blocked ips ---")
         if self.blocked_ips is not None and len(self.blocked_ips) > 0:
             for ip in self.blocked_ips:
-                print(f"-  {ip}")
+                print(f" {ip}")
         else:
-            print("- None")
+            print(" None")
         print()
 
     # ===========================================
@@ -246,7 +246,7 @@ class Firewall:
     def run(self):
         """Start capturing and classifying. Blocks until KeyboardInterrupt."""
         self.capture.start()
-        print(f"[Firewall] Warming up scaler on first {self.preprocessor.warmup_packets} packets...\n")
+        print(f"[Preprocessor] Warming up preprocessor on first {self.preprocessor.warmup_packets} packets...")
 
         batch_raw: list = []
         batch_dfs: list = []
@@ -262,7 +262,7 @@ class Firewall:
                     ready = self.preprocessor.add_to_warmup(raw_df)
                     self.stats["warmup"] += 1
                     if ready:
-                        print("[Firewall] Warmup complete. Classification started.\n")
+                        print("[Preprocessor] Warmup complete. Classification started!\n")
                     continue
 
                 batch_raw.append(raw_df)
@@ -272,7 +272,7 @@ class Firewall:
                     combined = pd.concat(batch_dfs, ignore_index=True)
                     labels = self.predict(combined)
                     for i, label in enumerate(labels):
-                        self.handle_prediction(label, source_ip, batch_raw[i])
+                        self.handle_prediction(label, source_ip)
                     batch_raw.clear()
                     batch_dfs.clear()
 
