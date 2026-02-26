@@ -189,7 +189,7 @@ class Firewall:
 
         return False
 
-    def handle_prediction(self, label: str, source_ip: str, raw_df: pd.DataFrame):
+    def handle_prediction(self, label: str, source_ip: str):
         self.stats[label] = self.stats.get(label, 0) + 1
 
         if label in TO_BLOCK_IMMEDIATELY or label in TO_BLOCK_AFTER_N_INSTANCES:
@@ -212,6 +212,16 @@ class Firewall:
         except subprocess.CalledProcessError as e:
             print(f"[Firewall] Failed to add iptables rule: {e}")
 
+    def unblock_ip(self, ip: str):
+        import subprocess
+        cmd = f"iptables -D INPUT -s {ip} -j DROP"
+        try:
+            subprocess.run(cmd.split(), check=True)
+            self.blocked_ips.discard(ip)
+            print(f"[Firewall] Unblocked {ip}!")
+        except subprocess.CalledProcessError as e:
+            print(f"[Firewall] Failed to unblock {ip}: {e}")
+
     def print_stats(self):
         elapsed = time.time() - self.start_time
         total = self.stats["total"]
@@ -221,6 +231,12 @@ class Firewall:
             count = self.stats.get(name, 0)
             pct = 100 * count / total if total else 0
             print(f"  {name:<22} {count:>6}  ({pct:.1f}%)")
+        print("\n#### Currently blockde ips ####")
+        if self.blocked_ips is not None and len(self.blocked_ips) > 0:
+            for ip in self.blocked_ips:
+                print(f"-  {ip}")
+        else:
+            print("- None")
         print()
 
     # ===========================================
@@ -271,7 +287,7 @@ class Firewall:
             self.print_stats()
 
 
-#-------------------------------------------------
+# -------------------------------------------------
 
 if __name__ == "__main__":
     fw = Firewall(
