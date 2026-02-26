@@ -162,14 +162,13 @@ class Firewall:
         self.stats[label] = self.stats.get(label, 0) + 1
 
         if label in ATTACK_CLASSES:
-            print(f"[BLOCK] ⚠  Attack detected: {label:<25} | src={source_ip or 'unknown'}")
+            print(f"[WARNING] ⚠  Attack detected: {label:<25} | src={source_ip or 'unknown'}")
             if self.block and source_ip and source_ip not in self.blocked_ips:
                 self.block_ip(source_ip)
         else:
             print(f"[ALLOW] ✓  Normal traffic from {source_ip or 'unknown':<25} | label={label}")
 
     def block_ip(self, ip: str):
-        """Add an iptables DROP rule for the attacking IP."""
         import subprocess
         cmd = f"iptables -I INPUT -s {ip} -j DROP"
         try:
