@@ -7,7 +7,7 @@ from typing import Optional
 from model.preprocessing.filtering import FEATURES
 
 # Mapping: feature name → pyshark layer.field path
-_FIELD_MAP = {
+FIELD_MAP = {
     "frame.len": ("frame", "len"),
     "ip.len": ("ip", "len"),
     "tcp.len": ("tcp", "len"),
@@ -71,7 +71,7 @@ def extract_features(packet) -> dict:
     Missing fields are returned as None (will be handled by the scaler pipeline).
     """
     row = {}
-    for feature, (layer, field) in _FIELD_MAP.items():
+    for feature, (layer, field) in FIELD_MAP.items():
         row[feature] = get_value(packet, layer, field)
     return row
 
