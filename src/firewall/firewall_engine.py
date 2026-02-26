@@ -6,13 +6,17 @@ import pathlib
 from sklearn.preprocessing import MinMaxScaler
 from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from src.firewall.data_extraction import LiveCapture
+from collections import defaultdict, deque
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
 MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/XGBOOST_classifier.joblib")
 DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 
 # Classes that trigger a block action
-ATTACK_CLASSES = {"DDoS-flooding", "DDoS-loris", "HTTP/2-attacks"}
+TO_BLOCK_IMMEDIATELY = {"HTTP/2-attacks"}
+TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris"}
+DDOS_STRIKES_TO_BLOCK = 5
+DDOS_WINDOW_SECONDS = 60
 
 
 # ===========================================
@@ -142,6 +146,9 @@ class Firewall:
         self.stats["warmup"] = 0
         self.start_time = time.time()
 
+        # blocked ips
+        self.ddos_strikes = defaultdict(deque)  # ip -> deque[timestamps]
+
     # ===========================================
     # ---       Firewall Helper Functions     ---
     # ===========================================
@@ -158,13 +165,40 @@ class Firewall:
             print(f"[Firewall] Prediction error: {e}")
             return ["Unknown"] * len(df)
 
+    def should_block_ip(self, ip: str, label: str) -> bool:
+        # Already blocked
+        if ip in self.blocked_ips:
+            return False
+
+        # Immediate block class
+        if label in TO_BLOCK_IMMEDIATELY:
+            return True
+
+        # Strike-based logic
+        if label in TO_BLOCK_AFTER_N_INSTANCES:
+            now = time.time()
+            dq = self.ddos_strikes[ip]
+            dq.append(now)
+
+            # Remove timestamps older than window
+            cutoff = now - DDOS_WINDOW_SECONDS
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+
+            return len(dq) >= DDOS_STRIKES_TO_BLOCK
+
+        return False
+
     def handle_prediction(self, label: str, source_ip: str, raw_df: pd.DataFrame):
         self.stats[label] = self.stats.get(label, 0) + 1
 
-        if label in ATTACK_CLASSES:
+        if label in TO_BLOCK_IMMEDIATELY or label in TO_BLOCK_AFTER_N_INSTANCES:
             print(f"[WARNING] ⚠  Attack detected: {label:<25} | src={source_ip or 'unknown'}")
-            if self.block and source_ip and source_ip not in self.blocked_ips:
+            if self.should_block_ip(source_ip, label):
                 self.block_ip(source_ip)
+                if source_ip:
+                    self.ddos_strikes[source_ip].clear()
+
         else:
             print(f"[ALLOW] ✓  Normal traffic from {source_ip or 'unknown':<25} | label={label}")
 
