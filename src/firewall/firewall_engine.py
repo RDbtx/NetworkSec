@@ -21,7 +21,7 @@ ATTACK_CLASSES = {"DDoS-flooding", "DDoS-loris", "HTTP/2-attacks"}
 
 
 class LivePreprocessor:
-    def __init__(self, warmup_packets: int = 100):
+    def __init__(self, warmup_packets: int = 500):
         self.warmup_packets = warmup_packets
         self.scaler = MinMaxScaler()
         self.scaler_fitted = False
@@ -238,10 +238,7 @@ class Firewall:
             self.print_stats()
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
+#-------------------------------------------------
 
 if __name__ == "__main__":
     fw = Firewall(
@@ -249,7 +246,7 @@ if __name__ == "__main__":
         interface="en0",
         bpf_filter=None,
         block=True,
-        warmup_packets=500,
+        warmup_packets=100,
         batch_size=1,
     )
     fw.run()
