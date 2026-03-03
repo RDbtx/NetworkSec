@@ -276,8 +276,8 @@ class Firewall:
                     batch_raw.clear()
                     batch_dfs.clear()
 
-                # Print stats every 5 minutes
-                if time.time() - last_stats > 300:
+                # Print stats every 30 seconds
+                if time.time() - last_stats > 30:
                     self.print_stats()
                     last_stats = time.time()
 
