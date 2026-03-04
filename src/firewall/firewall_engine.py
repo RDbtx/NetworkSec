@@ -1,5 +1,6 @@
 import os
 import time
+import queue
 import joblib
 import pandas as pd
 import pathlib
@@ -253,8 +254,11 @@ class Firewall:
         last_stats = time.time()
 
         try:
-            while True:
-                source_ip, raw_df = self.capture.queue.get()[0], self.capture.queue.get()[1]
+            while not self.capture.stop_event.is_set():
+                try:
+                    source_ip, raw_df = self.capture.queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
                 self.stats["total"] += 1
 
                 # Firewall Warmup
@@ -277,14 +281,14 @@ class Firewall:
                     batch_dfs.clear()
 
                 # Print stats every 30 seconds
-                if time.time() - last_stats > 30:
-                    self.print_stats()
-                    last_stats = time.time()
+                #if time.time() - last_stats > 30:
+                    #self.print_stats()
+                    #last_stats = time.time()
 
         except KeyboardInterrupt:
             print("\n[Firewall] Shutting down...")
             self.capture.stop()
-            self.print_stats()
+            #self.print_stats()
 
 
 # -------------------------------------------------
