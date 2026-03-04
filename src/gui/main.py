@@ -11,6 +11,7 @@ from datetime import datetime
 import flet as ft
 
 from src.firewall.firewall_engine import MODEL_PATH
+from src.gui.boot_screen import show_boot_screen
 from src.gui.event_bus import GUIEventBus
 from src.gui.gui_firewall import GUIFirewall, get_tshark_interfaces
 from src.gui.panels import (
@@ -30,17 +31,8 @@ from src.gui.theme import (
 )
 
 
-def main(page: ft.Page):
-    page.title   = "NETWATCH — BLACKWALL — INTRUSION FIREWALL"
-    page.bgcolor = BG
-    page.padding = 0
-    page.window.width      = 1400
-    page.window.height     = 860
-    page.window.min_width  = 1100
-    page.window.min_height = 700
-    page.fonts = {}  # SF Pro is a system font — no registration needed
-
-    # ── shared state ──────────────────────────────────────────────────────────
+def _build_app(page: ft.Page):
+    # shared state
     bus_ref:    list = [None]
     fw_ref:     list = [None]
     fw_thread:  list = [None]
@@ -331,6 +323,24 @@ def main(page: ft.Page):
     poll_alive["v"] = True
     threading.Thread(target=poll_loop, daemon=True).start()
     page.on_disconnect = lambda _: poll_alive.update({"v": False})
+
+
+def main(page: ft.Page):
+    """Entry point — shows boot screen then hands off to the main app."""
+    page.title   = "NETWATCH — BLACKWALL — INTRUSION FIREWALL"
+    page.bgcolor = BG
+    page.padding = 0
+    page.window.width      = 1400
+    page.window.height     = 860
+    page.window.min_width  = 1100
+    page.window.min_height = 700
+    page.fonts = {}
+
+    def launch_app():
+        page.clean()
+        _build_app(page)
+
+    show_boot_screen(page, on_complete=launch_app)
 
 
 ft.run(main)
