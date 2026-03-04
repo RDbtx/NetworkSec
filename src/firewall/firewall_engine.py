@@ -289,17 +289,3 @@ class Firewall:
             print("\n[Firewall] Shutting down...")
             self.capture.stop()
             #self.print_stats()
-
-
-# -------------------------------------------------
-
-if __name__ == "__main__":
-    fw = Firewall(
-        model_path=MODEL_PATH,
-        interface="en0",
-        bpf_filter=None,
-        block=True,
-        warmup_packets=100,
-        batch_size=1,
-    )
-    fw.run()
