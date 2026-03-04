@@ -52,7 +52,7 @@ TEXT_MUTED = "#3a4015"
 CELL_BG = "#040305"
 HEADER_BG = "#c8e55b"
 HEADER_FG = "#040305"
-MONO = "neomax"
+MONO = "SF Pro"
 SZ = 12
 
 
@@ -110,7 +110,7 @@ class GUIFirewall(Firewall):
     def __init__(self, bus: GUIEventBus, **kwargs):
         self._bus = bus
         self._gui_allowed = 0
-        self._gui_blocked = 0
+        self._gui_warnings = 0
         super().__init__(**kwargs)
 
     @contextmanager
@@ -150,7 +150,7 @@ class GUIFirewall(Firewall):
         action = "WARNING" if is_attack else "ALLOW"
 
         if is_attack:
-            self._gui_blocked += 1
+            self._gui_warnings += 1
         else:
             self._gui_allowed += 1
 
@@ -158,7 +158,7 @@ class GUIFirewall(Firewall):
         self._bus.post_row(ts, action, source_ip or "unknown", label)
 
         total = self.stats.get("total", 0)
-        self._bus.post_stat(self._gui_allowed, self._gui_blocked, total)
+        self._bus.post_stat(self._gui_allowed, self._gui_warnings, total)
 
         elapsed = time.time() - self.start_time
         pps = total / elapsed if elapsed > 0 else 0.0
@@ -181,15 +181,18 @@ def main(page: ft.Page):
     page.window.height = 860
     page.window.min_width = 1100
     page.window.min_height = 700
-    page.fonts = {"neomax": "./fonts/neomax.otf"}
+    page.fonts = {}
 
     bus_ref: list = [None]
     fw_ref: list = [None]
     fw_thread: list = [None]
     poll_alive = {"v": False}
 
-    def mono(text, color=TEXT, size=SZ, weight=None):
-        return ft.Text(text, font_family=MONO, color=color, size=size, weight=weight)
+    def text_ui(text, color=TEXT, size=SZ, weight=None):
+        kwargs = dict(color=color, size=size, weight=weight)
+        if MONO:
+            kwargs["font_family"] = MONO
+        return ft.Text(text, **kwargs)
 
     def label_text(text, color=TEXT_DIM, size=SZ - 1):
         return ft.Text(
@@ -261,6 +264,21 @@ def main(page: ft.Page):
             auto_scroll=False,
         )
 
+    def hvscroll(content, pad=0):
+        # Scrolls both vertically and horizontally — for logs and IPs
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[ft.Container(content=content, padding=pad)],
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                )
+            ],
+            expand=True,
+            spacing=0,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
     # ── SYSTEM LOG ────────────────────────────────────────────────────────────
     # (no scroll here; the panel wrapper will scroll)
     log_col = ft.Column(spacing=1)
@@ -273,25 +291,20 @@ def main(page: ft.Page):
             ft.Row(
                 spacing=5,
                 controls=[
-                    mono(datetime.now().strftime("%H:%M:%S"), TEXT_MUTED, SZ - 3),
+                    text_ui(datetime.now().strftime("%H:%M:%S"), TEXT_MUTED, SZ - 3),
                     ft.Container(
-                        content=mono(icon, color, SZ - 3, ft.FontWeight.BOLD),
+                        content=text_ui(icon, color, SZ - 3, ft.FontWeight.BOLD),
                         bgcolor=BG,
                         padding=ft.Padding.symmetric(horizontal=3, vertical=1),
                     ),
                     # ✅ constrain long text inside panel
-                    ft.Container(
-                        expand=True,
-                        content=ft.Text(
+                    ft.Text(
                             msg.strip(),
                             font_family=MONO,
                             size=SZ - 3,
                             color=color,
                             no_wrap=True,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                            max_lines=1,
                         ),
-                    ),
                 ],
             )
         )
@@ -331,10 +344,10 @@ def main(page: ft.Page):
             0,
             ft.DataRow(
                 cells=[
-                    ft.DataCell(mono(ts, TEXT_DIM, SZ)),
-                    ft.DataCell(mono(action, ac, SZ, ft.FontWeight.BOLD)),
-                    ft.DataCell(mono(ip, TEXT, SZ)),
-                    ft.DataCell(mono(label, lc, SZ)),
+                    ft.DataCell(text_ui(ts, TEXT_DIM, SZ)),
+                    ft.DataCell(text_ui(action, ac, SZ, ft.FontWeight.BOLD)),
+                    ft.DataCell(text_ui(ip, TEXT, SZ)),
+                    ft.DataCell(text_ui(label, lc, SZ)),
                 ]
             ),
         )
@@ -342,9 +355,9 @@ def main(page: ft.Page):
             traffic_table.rows.pop()
 
     # ── CLASSIFICATION STATS ──────────────────────────────────────────────────
-    _smeta0 = mono("--", TEXT_DIM, SZ)
-    _smeta1 = mono("--", TEXT_DIM, SZ)
-    _smeta2 = mono("--", TEXT_DIM, SZ)
+    _smeta0 = text_ui("--", TEXT_DIM, SZ)
+    _smeta1 = text_ui("--", TEXT_DIM, SZ)
+    _smeta2 = text_ui("--", TEXT_DIM, SZ)
 
     _smeta0.width = 70
     _smeta1.width = 70
@@ -381,16 +394,16 @@ def main(page: ft.Page):
                     [
                         ft.Row(
                             [
-                                ft.Container(width=NAME_W, content=mono(name, TEXT, SZ)),
+                                ft.Container(width=NAME_W, content=text_ui(name, TEXT, SZ)),
                                 ft.Container(
                                     width=COUNT_W,
                                     alignment=ft.Alignment.CENTER_RIGHT,
-                                    content=mono(str(count), TEXT, SZ, ft.FontWeight.BOLD),
+                                    content=text_ui(str(count), TEXT, SZ, ft.FontWeight.BOLD),
                                 ),
                                 ft.Container(
                                     width=PCT_W,
                                     alignment=ft.Alignment.CENTER_RIGHT,
-                                    content=mono(f"{pct:0.1f}%", TEXT_DIM, SZ),
+                                    content=text_ui(f"{pct:0.1f}%", TEXT_DIM, SZ),
                                 ),
                             ],
                             spacing=10,
@@ -433,20 +446,45 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         ft.Container(width=4, height=4, bgcolor=TEXT_MUTED),
-                        mono("none", TEXT_MUTED, SZ),
+                        text_ui("none", TEXT_MUTED, SZ),
                     ],
                     spacing=8,
                 )
             )
         else:
             for ip in sorted(ips):
+                _ip = ip  # capture for closure
+
+                def make_unblock(target_ip):
+                    def _unblock(_):
+                        fw = fw_ref[0]
+                        if fw:
+                            fw.unblock_ip(target_ip)
+                            push_log(f"[Firewall] Unblocked {target_ip}", "info")
+                            bus = bus_ref[0]
+                            if bus:
+                                bus.post_blocked_ips(fw.blocked_ips)
+                            page.update()
+                    return _unblock
+
                 blocked_col.controls.append(
                     ft.Row(
                         [
-                            ft.Container(width=6, height=6, bgcolor=ACCENT),
-                            mono(ip, ACCENT, SZ),
+                            ft.Container(width=6, height=6, bgcolor=DANGER),
+                            text_ui(_ip, DANGER, SZ),
+                            ft.Container(expand=True),
+                            ft.TextButton(
+                                "✕",
+                                on_click=make_unblock(_ip),
+                                style=ft.ButtonStyle(
+                                    color={ft.ControlState.DEFAULT: TEXT_MUTED,
+                                           ft.ControlState.HOVERED: DANGER},
+                                    padding=ft.Padding.all(0),
+                                ),
+                            ),
                         ],
-                        spacing=8,
+                        spacing=6,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     )
                 )
 
@@ -454,10 +492,10 @@ def main(page: ft.Page):
 
     # ── status widgets ────────────────────────────────────────────────────────
     dot = ft.Container(width=7, height=7, bgcolor=TEXT_MUTED)
-    lbl_status = mono("OFFLINE", TEXT_MUTED, SZ, ft.FontWeight.BOLD)
-    lbl_allowed = mono("0", SUCCESS, 18, ft.FontWeight.BOLD)
-    lbl_blocked = mono("0", ACCENT, 18, ft.FontWeight.BOLD)
-    lbl_total = mono("0", TEXT, 18, ft.FontWeight.BOLD)
+    lbl_status = text_ui("OFFLINE", TEXT_MUTED, SZ, ft.FontWeight.BOLD)
+    lbl_allowed = text_ui("0", SUCCESS, 18, ft.FontWeight.BOLD)
+    lbl_blocked = text_ui("0", ACCENT, 18, ft.FontWeight.BOLD)
+    lbl_total = text_ui("0", TEXT, 18, ft.FontWeight.BOLD)
 
     def update_counters(allowed, blocked, total):
         lbl_allowed.value = str(allowed)
@@ -520,9 +558,9 @@ def main(page: ft.Page):
                     model_path=MODEL_PATH,
                     interface=iface,
                     bpf_filter=None,
-                    block=False,
+                    block=True,
                     warmup_packets=100,
-                    batch_size=1,
+                    batch_size=8,
                 )
                 fw_ref[0] = fw
                 fw.run()
@@ -713,7 +751,7 @@ def main(page: ft.Page):
                             ft.Column(
                                 [
                                     label_text("BREACH MONITORING INTERFACE"),
-                                    mono("ACTIVE MONITORING", ACCENT, SZ),
+                                    text_ui("ACTIVE MONITORING", ACCENT, SZ),
                                 ],
                                 spacing=0,
                             ),
@@ -725,7 +763,7 @@ def main(page: ft.Page):
                     padding=ft.Padding.symmetric(horizontal=12, vertical=5),
                 ),
                 stat_card("ALLOWED", lbl_allowed, SUCCESS),
-                stat_card("BLOCKED", lbl_blocked, ACCENT),
+                stat_card("WARNINGS", lbl_blocked, ACCENT),
                 stat_card("TOTAL", lbl_total, ACCENT),
                 ft.Container(expand=True),
                 iface_card,
@@ -744,7 +782,7 @@ def main(page: ft.Page):
 
     # ── BODY (ALL SCROLLABLE) ─────────────────────────────────────────────────
     # Panels (keep your expand weights for large screens)
-    log_panel = panel("SYSTEM LOG", vscroll(log_col, pad=8), expand=3, icon="▓▓")
+    log_panel = panel("SYSTEM LOG", hvscroll(log_col, pad=8), expand=3, icon="▓▓")
     traffic_table_wrap = ft.Container(
         content=traffic_table,
         expand=True,
@@ -759,7 +797,93 @@ def main(page: ft.Page):
     )
     stats_panel_col = panel("CLASSIFICATION STATS", vscroll(stats_body, pad=8), expand=3, icon="◈◈")
 
-    blocked_panel = panel("BLOCKED IPs", vscroll(blocked_col, pad=8), expand=2, icon="██", trailing=blocked_badge)
+    # ── UNBLOCK INPUT (pinned footer inside blocked panel) ────────────────────
+    unblock_input = ft.TextField(
+        hint_text="IP address...",
+        hint_style=ft.TextStyle(font_family=MONO, color=TEXT_MUTED, size=SZ),
+        text_style=ft.TextStyle(font_family=MONO, color=TEXT, size=SZ),
+        bgcolor=BG,
+        border_color=BORDER,
+        focused_border_color=BORDER,
+        border_radius=0,
+        content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+        expand=True,
+        height=32,
+    )
+
+    def do_unblock(_):
+        ip = unblock_input.value.strip() if unblock_input.value else ""
+        if not ip:
+            return
+        fw = fw_ref[0]
+        if fw:
+            if ip not in fw.blocked_ips:
+                push_log(f"[Firewall] {ip} is not in the blocked list", "warn")
+                unblock_input.value = ""
+                page.update()
+                return
+            fw.unblock_ip(ip)
+            push_log(f"[Firewall] Unblocked {ip}", "info")
+            bus = bus_ref[0]
+            if bus:
+                bus.post_blocked_ips(fw.blocked_ips)
+        else:
+            push_log(f"[Firewall] No active session to unblock {ip}", "warn")
+        unblock_input.value = ""
+        page.update()
+
+    unblock_btn = ft.IconButton(
+        icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,
+        icon_color=DANGER,
+        icon_size=16,
+        on_click=do_unblock,
+        tooltip="Unblock IP",
+        style=ft.ButtonStyle(
+            bgcolor={ft.ControlState.DEFAULT: BG, ft.ControlState.HOVERED: "#2a0810"},
+            shape=ft.RoundedRectangleBorder(radius=0),
+            side=ft.BorderSide(1, DANGER),
+            padding=ft.Padding.all(4),
+        ),
+    )
+
+    unblock_section = ft.Container(
+        content=ft.Column(
+            [
+                ft.Container(height=1, bgcolor=BORDER),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            label_text("MANUAL UNBLOCK"),
+                            ft.Row([unblock_input, unblock_btn], spacing=4),
+                        ],
+                        spacing=4,
+                    ),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                ),
+            ],
+            spacing=0,
+        ),
+        bgcolor=PANEL2,
+        border=ft.Border(top=ft.BorderSide(0)),
+    )
+
+    blocked_panel = ft.Container(
+        expand=2,
+        bgcolor=CELL_BG,
+        border=ft.Border.all(1, BORDER),
+        border_radius=0,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+        content=ft.Column(
+            [
+                panel_header("BLOCKED IPs", "██", trailing=blocked_badge),
+                ft.Container(content=hvscroll(blocked_col, pad=8), expand=True),
+                unblock_section,
+            ],
+            spacing=0,
+            expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        ),
+    )
 
     # Responsive layout — Row with expand weights so all panels fill exactly 100% width
     body = ft.Row(
@@ -777,9 +901,9 @@ def main(page: ft.Page):
     footer = ft.Container(
         content=ft.Row(
             [
-                mono("CUSTOM GLITCHES ON UI MAY APPEAR, BASED ON THIS ANALYSIS.", TEXT_MUTED, SZ - 1),
+                text_ui("CUSTOM GLITCHES ON UI MAY APPEAR, BASED ON THIS ANALYSIS.", TEXT_MUTED, SZ - 1),
                 ft.Container(expand=True),
-                mono("DOCUMENTS//BLACKWALL//SUBSYSTEM//NETWORK//INTRUSTION//FIREWALL", TEXT_MUTED, SZ - 1),
+                text_ui("DOCUMENTS//BLACKWALL//SUBSYSTEM//NETWORK//INTRUSTION//FIREWALL", TEXT_MUTED, SZ - 1),
             ]
         ),
         bgcolor=PANEL,

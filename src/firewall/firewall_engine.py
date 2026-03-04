@@ -204,20 +204,67 @@ class Firewall:
             print(f"[ALLOW] ✓  Normal traffic from {source_ip or 'unknown':<25} | label={label}")
 
     def block_ip(self, ip: str):
-        import subprocess
-        cmd = f"iptables -I INPUT -s {ip} -j DROP"
-        try:
-            subprocess.run(cmd.split(), check=True)
+        if not self.block:
+            # Simulation mode: track without actually blocking
             self.blocked_ips.add(ip)
-            print(f"[Firewall] iptables rule added: DROP {ip}")
+            print(f"[Firewall] [SIM] Would block {ip} (block=False, simulation only)")
+            return
+
+        import subprocess
+        import platform
+        system = platform.system()
+        try:
+            if system == "Darwin":  # macOS — use pfctl
+                # Add to a pf anchor table
+                subprocess.run(
+                    ["sudo", "pfctl", "-t", "blackwall_blocked", "-T", "add", ip],
+                    check=True, capture_output=True
+                )
+            elif system == "Linux":
+                subprocess.run(
+                    ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
+                    check=True, capture_output=True
+                )
+            elif system == "Windows":
+                subprocess.run(
+                    ["netsh", "advfirewall", "firewall", "add", "rule",
+                     f"name=Blackwall_Block_{ip}", "dir=in", "action=block",
+                     f"remoteip={ip}"],
+                    check=True, capture_output=True
+                )
+            self.blocked_ips.add(ip)
+            print(f"[Firewall] Blocked {ip} ({system})")
         except subprocess.CalledProcessError as e:
-            print(f"[Firewall] Failed to add iptables rule: {e}")
+            # Still track it in the GUI even if the OS rule failed
+            self.blocked_ips.add(ip)
+            print(f"[Firewall] OS rule failed for {ip}, tracked only: {e}")
 
     def unblock_ip(self, ip: str):
+        if not self.block:
+            self.blocked_ips.discard(ip)
+            print(f"[Firewall] [SIM] Removed {ip} from simulation block list")
+            return
+
         import subprocess
-        cmd = f"iptables -D INPUT -s {ip} -j DROP"
+        import platform
+        system = platform.system()
         try:
-            subprocess.run(cmd.split(), check=True)
+            if system == "Darwin":
+                subprocess.run(
+                    ["sudo", "pfctl", "-t", "blackwall_blocked", "-T", "delete", ip],
+                    check=True, capture_output=True
+                )
+            elif system == "Linux":
+                subprocess.run(
+                    ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
+                    check=True, capture_output=True
+                )
+            elif system == "Windows":
+                subprocess.run(
+                    ["netsh", "advfirewall", "firewall", "delete", "rule",
+                     f"name=Blackwall_Block_{ip}"],
+                    check=True, capture_output=True
+                )
             self.blocked_ips.discard(ip)
             print(f"[Firewall] Unblocked {ip}!")
         except subprocess.CalledProcessError as e:
@@ -244,48 +291,86 @@ class Firewall:
     # ---        Main Firewall Pipeline       ---
     # ===========================================
 
+    # Maximum packets to hold in queue — drop oldest if exceeded to stay real-time
+    QUEUE_MAX_SIZE = 500
+
     def run(self):
         """Start capturing and classifying. Blocks until KeyboardInterrupt."""
         self.capture.start()
         print(f"[Preprocessor] Warming up preprocessor on first {self.preprocessor.warmup_packets} packets...")
 
-        batch_raw: list = []
-        batch_dfs: list = []
         last_stats = time.time()
 
         try:
             while not self.capture.stop_event.is_set():
+
+                # ── Drain up to batch_size packets at once ─────────────────
+                batch_ips: list = []
+                batch_dfs: list = []
+
+                # Block briefly waiting for at least one packet
                 try:
                     source_ip, raw_df = self.capture.queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                self.stats["total"] += 1
 
-                # Firewall Warmup
-                if not self.preprocessor.scaler_fitted:
-                    ready = self.preprocessor.add_to_warmup(raw_df)
-                    self.stats["warmup"] += 1
-                    if ready:
-                        print("[Preprocessor] Warmup complete. Classification started!\n")
-                    continue
+                # Drop stale packets if queue is too deep (stay real-time)
+                q_size = self.capture.queue.qsize()
+                if q_size > self.QUEUE_MAX_SIZE:
+                    dropped = q_size - self.QUEUE_MAX_SIZE
+                    for _ in range(dropped):
+                        try:
+                            self.capture.queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    print(f"[Firewall] Dropped {dropped} stale packets to stay real-time")
 
-                batch_raw.append(raw_df)
-                batch_dfs.append(raw_df)
+                # Collect first packet
+                packets = [(source_ip, raw_df)]
 
-                if len(batch_dfs) >= self.batch_size:
+                # Drain remaining available packets up to batch_size
+                for _ in range(self.batch_size - 1):
+                    try:
+                        packets.append(self.capture.queue.get_nowait())
+                    except queue.Empty:
+                        break
+
+                # ── Process each packet ────────────────────────────────────
+                for source_ip, raw_df in packets:
+                    self.stats["total"] += 1
+
+                    # Warmup phase
+                    if not self.preprocessor.scaler_fitted:
+                        ready = self.preprocessor.add_to_warmup(raw_df)
+                        self.stats["warmup"] += 1
+                        if ready:
+                            print("[Preprocessor] Warmup complete. Classification started!\n")
+                        continue
+
+                    batch_ips.append(source_ip)
+                    batch_dfs.append(raw_df)
+
+                # ── Run inference on the collected batch ───────────────────
+                if batch_dfs:
                     combined = pd.concat(batch_dfs, ignore_index=True)
                     labels = self.predict(combined)
                     for i, label in enumerate(labels):
-                        self.handle_prediction(label, source_ip)
-                    batch_raw.clear()
-                    batch_dfs.clear()
-
-                # Print stats every 30 seconds
-                #if time.time() - last_stats > 30:
-                    #self.print_stats()
-                    #last_stats = time.time()
+                        self.handle_prediction(label, batch_ips[i])
 
         except KeyboardInterrupt:
             print("\n[Firewall] Shutting down...")
             self.capture.stop()
-            #self.print_stats()
+
+
+# -------------------------------------------------
+
+if __name__ == "__main__":
+    fw = Firewall(
+        model_path=MODEL_PATH,
+        interface="en0",
+        bpf_filter=None,
+        block=True,
+        warmup_packets=100,
+        batch_size=1,
+    )
+    fw.run()
