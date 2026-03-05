@@ -1,13 +1,9 @@
-"""
-Blackwall Firewall GUI — Cyberpunk 2077 Breach Protocol Edition
-Requires: flet >= 0.80
-"""
-
 import re
 import threading
 import time
 from datetime import datetime
-
+import sys
+import os
 import flet as ft
 
 from src.firewall.firewall_engine import MODEL_PATH
@@ -31,34 +27,48 @@ from src.gui.theme import (
 )
 
 
+def resource_path(relative_path: str) -> str:
+    """
+    Resolve a resource path that works in three situations:
+      1. PyInstaller .app / exe  → sys._MEIPASS
+      2. Dev: running main.py directly → same directory as main.py
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # Inside PyInstaller bundle — _MEIPASS is the _internal/ folder
+        base = sys._MEIPASS
+    else:
+        # Dev mode — anchor to the folder containing main.py
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, relative_path)
+
+
 def _build_app(page: ft.Page):
     # shared state
-    bus_ref:    list = [None]
-    fw_ref:     list = [None]
-    fw_thread:  list = [None]
-    poll_alive       = {"v": False}
+    bus_ref: list = [None]
+    fw_ref: list = [None]
+    fw_thread: list = [None]
+    poll_alive = {"v": False}
 
     # ── panels ────────────────────────────────────────────────────────────────
-    log_panel,     push_log            = build_log_panel()
+    log_panel, push_log = build_log_panel()
     traffic_panel, push_row, clear_traffic = build_traffic_panel()
-    stats_panel,   update_stats, clear_stats = build_stats_panel()
+    stats_panel, update_stats, clear_stats = build_stats_panel()
 
-    # blocked panel needs refs so it can call fw.unblock_ip and push_log
     blocked_panel, update_blocked = build_blocked_panel(
         fw_ref, bus_ref, push_log, page
     )
 
     # ── status widgets ────────────────────────────────────────────────────────
-    dot        = ft.Container(width=7, height=7, bgcolor=TEXT_MUTED)
-    lbl_status  = text_ui("OFFLINE", TEXT_MUTED, SZ, ft.FontWeight.BOLD)
+    dot = ft.Container(width=7, height=7, bgcolor=TEXT_MUTED)
+    lbl_status = text_ui("OFFLINE", TEXT_MUTED, SZ, ft.FontWeight.BOLD)
     lbl_allowed = text_ui("0", SUCCESS, 18, ft.FontWeight.BOLD)
-    lbl_warnings = text_ui("0", ACCENT,  18, ft.FontWeight.BOLD)
-    lbl_total   = text_ui("0", TEXT,    18, ft.FontWeight.BOLD)
+    lbl_warnings = text_ui("0", ACCENT, 18, ft.FontWeight.BOLD)
+    lbl_total = text_ui("0", TEXT, 18, ft.FontWeight.BOLD)
 
     def update_counters(allowed, warnings, total):
-        lbl_allowed.value  = str(allowed)
+        lbl_allowed.value = str(allowed)
         lbl_warnings.value = str(warnings)
-        lbl_total.value    = str(total)
+        lbl_total.value = str(total)
 
     # ── poll loop ─────────────────────────────────────────────────────────────
     def poll_loop():
@@ -86,15 +96,13 @@ def _build_app(page: ft.Page):
         if fw_ref[0] is not None:
             return
 
-        # clear all panels
         clear_traffic()
         clear_stats()
         update_blocked(set())
         update_counters(0, 0, 0)
 
-        # parse selected interface
-        raw   = iface_dropdown.value or _ifaces[0][1]
-        m     = re.match(r"^\d+\.\s+(\S+)", raw)
+        raw = iface_dropdown.value or _ifaces[0][1]
+        m = re.match(r"^\d+\.\s+(\S+)", raw)
         iface = m.group(1) if m else raw
 
         set_online(True)
@@ -121,7 +129,7 @@ def _build_app(page: ft.Page):
             except Exception as e:
                 bus.post_log(f"[Firewall] Fatal: {e}", "danger")
             finally:
-                fw_ref[0]    = None
+                fw_ref[0] = None
                 fw_thread[0] = None
 
         t = threading.Thread(target=_run, daemon=True)
@@ -147,12 +155,12 @@ def _build_app(page: ft.Page):
             label,
             style=ft.ButtonStyle(
                 bgcolor={
-                    ft.ControlState.DEFAULT:  bg,
-                    ft.ControlState.HOVERED:  hover_bg,
+                    ft.ControlState.DEFAULT: bg,
+                    ft.ControlState.HOVERED: hover_bg,
                     ft.ControlState.DISABLED: "#0b0b0b",
                 },
                 color={
-                    ft.ControlState.DEFAULT:  fg,
+                    ft.ControlState.DEFAULT: fg,
                     ft.ControlState.DISABLED: TEXT_MUTED,
                 },
                 shape=ft.RoundedRectangleBorder(radius=0),
@@ -166,16 +174,16 @@ def _build_app(page: ft.Page):
             on_click=on_click,
         )
 
-    start_btn = cp_btn("▶  INITIATE",  "#071408", SUCCESS, "#0f2810", on_start)
-    stop_btn  = cp_btn("■  TERMINATE", "#180508", DANGER,  "#2a0810", on_stop)
+    start_btn = cp_btn("▶  INITIATE", "#071408", SUCCESS, "#0f2810", on_start)
+    stop_btn = cp_btn("■  TERMINATE", "#180508", DANGER, "#2a0810", on_stop)
 
     # ── online / offline state ────────────────────────────────────────────────
     def set_online(on: bool):
-        dot.bgcolor        = SUCCESS   if on else TEXT_MUTED
-        lbl_status.color   = SUCCESS   if on else TEXT_MUTED
-        lbl_status.value   = "ONLINE"  if on else "OFFLINE"
+        dot.bgcolor = SUCCESS if on else TEXT_MUTED
+        lbl_status.color = SUCCESS if on else TEXT_MUTED
+        lbl_status.value = "ONLINE" if on else "OFFLINE"
         start_btn.disabled = on
-        stop_btn.disabled  = not on
+        stop_btn.disabled = not on
         iface_dropdown.disabled = on
 
     # ── interface selector ────────────────────────────────────────────────────
@@ -263,9 +271,9 @@ def _build_app(page: ft.Page):
                     bgcolor=PANEL2, border=ft.Border.all(1, BORDER),
                     padding=ft.Padding.symmetric(horizontal=12, vertical=5),
                 ),
-                stat_card("ALLOWED",  lbl_allowed,  SUCCESS),
+                stat_card("ALLOWED", lbl_allowed, SUCCESS),
                 stat_card("WARNINGS", lbl_warnings, ACCENT),
-                stat_card("TOTAL",    lbl_total,    ACCENT),
+                stat_card("TOTAL", lbl_total, ACCENT),
                 ft.Container(expand=True),
                 iface_card,
                 start_btn,
@@ -326,13 +334,12 @@ def _build_app(page: ft.Page):
 
 
 def main(page: ft.Page):
-    """Entry point — shows boot screen then hands off to the main app."""
-    page.title   = "NETWATCH — BLACKWALL — INTRUSION FIREWALL"
+    page.title = "NETWATCH — BLACKWALL — INTRUSION FIREWALL"
     page.bgcolor = BG
     page.padding = 0
-    page.window.width      = 1400
-    page.window.height     = 860
-    page.window.min_width  = 1100
+    page.window.width = 1400
+    page.window.height = 860
+    page.window.min_width = 1100
     page.window.min_height = 700
     page.fonts = {}
 
@@ -340,7 +347,11 @@ def main(page: ft.Page):
         page.clean()
         _build_app(page)
 
-    show_boot_screen(page, on_complete=launch_app)
+    show_boot_screen(
+        resource_path("src/gui/assets/netwatch_logo.png"),
+        page,
+        on_complete=launch_app,
+    )
 
 
 ft.run(main)

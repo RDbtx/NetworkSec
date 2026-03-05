@@ -1,7 +1,3 @@
-"""
-boot_screen.py — Animated boot sequence for Blackwall GUI.
-"""
-
 import asyncio
 import flet as ft
 
@@ -21,7 +17,7 @@ _BOOT_MESSAGES = [
 ]
 
 
-def show_boot_screen(page: ft.Page, on_complete):
+def show_boot_screen(asset_path, page: ft.Page, on_complete):
     page.clean()
     page.bgcolor = BG
 
@@ -29,7 +25,7 @@ def show_boot_screen(page: ft.Page, on_complete):
     # UI
     # ─────────────────────────────────────────────────────────────────────────
     logo = ft.Image(
-        src="/Users/riccardo/Desktop/NetworkSec/src/gui/assets/netwatch_logo.png",
+        src=asset_path,
         width=200, height=200, fit="contain",
     )
     logo.opacity = 0.0
@@ -48,9 +44,9 @@ def show_boot_screen(page: ft.Page, on_complete):
     subtitle.letter_spacing = 6
     subtitle.opacity = 0.0
 
-    progress_fill  = ft.Container(width=0,   height=3, bgcolor=ACCENT)
+    progress_fill = ft.Container(width=0, height=3, bgcolor=ACCENT)
     progress_track = ft.Container(width=400, height=3, bgcolor=TEXT_MUTED)
-    progress_bar   = ft.Container(
+    progress_bar = ft.Container(
         content=ft.Stack([progress_track, progress_fill]),
         width=400, height=3
     )
