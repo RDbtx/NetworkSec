@@ -6,6 +6,8 @@ import socket
 import pandas as pd
 import pathlib
 import psutil
+import subprocess
+import platform
 from sklearn.preprocessing import MinMaxScaler
 from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from src.firewall.data_extraction import LiveCapture
@@ -270,8 +272,6 @@ class Firewall:
             print(f"[Firewall] [SIM] Removed {ip} from simulation block list")
             return
 
-        import subprocess
-        import platform
         system = platform.system()
         try:
             if system == "Darwin":
