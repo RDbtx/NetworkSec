@@ -121,7 +121,7 @@ def _build_app(page: ft.Page):
                     interface=iface,
                     bpf_filter=None,
                     block=True,
-                    warmup_packets=100,
+                    warmup_packets=1,
                     keylog_file=None,
                     batch_size=8,
                 )

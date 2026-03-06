@@ -2,8 +2,10 @@ import os
 import time
 import queue
 import joblib
+import socket
 import pandas as pd
 import pathlib
+import psutil
 from sklearn.preprocessing import MinMaxScaler
 from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from src.firewall.data_extraction import LiveCapture
@@ -15,7 +17,7 @@ DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 
 # Classes that trigger a block action
 TO_BLOCK_IMMEDIATELY = {"HTTP/2-attacks"}
-TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris"}
+TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris", "Transport-layer"}
 DDOS_STRIKES_TO_BLOCK = 5
 DDOS_WINDOW_SECONDS = 60
 
@@ -51,9 +53,17 @@ class LivePreprocessor:
     def resolve_compound(self, df: pd.DataFrame) -> pd.DataFrame:
         obj_cols = [c for c in df.select_dtypes(include=["object", "str"]).columns]
         for col in obj_cols:
-            df[col] = df[col].apply(
-                lambda v: pd.eval(str(v)) if isinstance(v, str) and any(op in v for op in ('+', '-', '*', '/')) else v
-            )
+            def safe_eval(v):
+                if not isinstance(v, str):
+                    return v
+                if not any(op in v for op in ('+', '-', '*', '/')):
+                    return v
+                try:
+                    return pd.eval(str(v))
+                except Exception:
+                    return v
+
+            df[col] = df[col].apply(safe_eval)
         return df
 
     def ohe(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -139,9 +149,22 @@ class Firewall:
 
         self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
 
-        # Capture
-        self.capture = LiveCapture(interface=interface, bpf_filter=bpf_filter,
-                                   keylog_file=keylog_file)
+        def get_interface_ip(interface_name):
+            addresses = psutil.net_if_addrs()
+            if interface_name in addresses:
+                for addr in addresses[interface_name]:
+                    if addr.family == socket.AF_INET:  # Look for IPv4
+                        return addr.address
+            return None
+
+        machine_ip = get_interface_ip(interface)
+        if machine_ip:
+            bpf = f"host {machine_ip}"
+            if bpf_filter:
+                bpf = f"({bpf_filter}) and ({bpf})"
+        else:
+            bpf = bpf_filter
+        self.capture = LiveCapture(interface=interface, bpf_filter=bpf)
 
         # Stats
         self.stats = {name: 0 for name in self.label_names}
