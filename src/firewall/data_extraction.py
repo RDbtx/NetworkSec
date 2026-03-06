@@ -3,6 +3,7 @@ import pandas as pd
 import queue
 import threading
 import platform
+import os
 from typing import Optional
 from src.model.preprocessing.filtering import FEATURES
 
@@ -56,6 +57,7 @@ FIELD_MAP = {
     "http.content_type": ("http", "content_type"),
 }
 
+
 def get_value(packet, layer_name: str, field_name: str):
     """Return the field value from a pyshark packet, or None if absent."""
     try:
@@ -68,7 +70,7 @@ def get_value(packet, layer_name: str, field_name: str):
 def extract_features(packet) -> dict:
     """
     Extract all model features from a single pyshark packet.
-    Missing fields are returned as None (will be handled by the scaler pipeline).
+    Missing fields are returned as None (handled downstream by the scaler pipeline).
     """
     row = {}
     for feature, (layer, field) in FIELD_MAP.items():
@@ -87,25 +89,67 @@ def packet_to_dataframe(packet):
     row = extract_features(packet)
     return source_ip, pd.DataFrame([row], columns=FEATURES)
 
+
 # ---------------------------------------------------------------------------
-#                       Packets Capture
+#                           Packets Capture
 # ---------------------------------------------------------------------------
 
 class LiveCapture:
+    """
+    Captures live packets on *interface*, optionally decrypting TLS via a
+    SSLKEYLOGFILE so that HTTP/2 and HTTP/3 (QUIC) frames are visible to
+    Wireshark / tshark and therefore to pyshark.
 
-    def __init__(self, interface: str, bpf_filter: Optional[str] = None):
+    Parameters
+    ----------
+    interface   : network interface name (e.g. "en0", "eth0")
+    bpf_filter  : optional BPF capture filter string
+    keylog_file : path to an NSS key-log file used for TLS decryption.
+                  • Pass an explicit path to use a pre-existing file.
+                  • Pass None (default) to auto-detect the platform default
+                    path AND set the SSLKEYLOGFILE env-var so the current
+                    process (and any child browsers) will write keys there.
+    """
+
+    def __init__(
+            self,
+            interface: str,
+            bpf_filter: Optional[str] = None,
+            keylog_file: Optional[str] = None,
+    ):
         if interface is None:
-            sysname = platform.system()
-            if sysname in ("Windows", "Linux"):
-                interface = "eth0"
-            else:
-                interface = "en0"
+            interface = "eth0" if platform.system() in ("Windows", "Linux") else "en0"
 
         self.interface = interface
         self.bpf_filter = bpf_filter
+        self.keylog_file = keylog_file  # resolved in capture_loop
         self.queue: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def resolve_keylog_path(self) -> str:
+        if self.keylog_file:
+            path = self.keylog_file
+        elif platform.system() == "Windows":
+            path = os.path.join(os.environ.get("USERPROFILE", "C:\\"), "sslkeys.log")
+        else:
+            path = "/tmp/sslkeys.log"
+
+        # Touch the file so tshark finds it on startup — no directory creation needed
+        # since /tmp always exists on Unix and USERPROFILE always exists on Windows
+        if not os.path.exists(path):
+            with open(path, "a"):
+                pass
+
+        return path
+
+    # ------------------------------------------------------------------
+    # Capture loop (runs in background thread)
+    # ------------------------------------------------------------------
 
     def capture_loop(self):
         kwargs = dict(
@@ -113,8 +157,21 @@ class LiveCapture:
             use_json=True,
             include_raw=False,
         )
+
         if self.bpf_filter:
             kwargs["bpf_filter"] = self.bpf_filter
+
+        # ── TLS key-log setup ──────────────────────────────────────────
+        keylog = self.resolve_keylog_path()
+
+        # Tell the OS (and any browser launched after this point) to write keys here.
+        os.environ["SSLKEYLOGFILE"] = keylog
+
+        # Tell tshark/Wireshark dissector where the key file lives so it can
+        # decrypt TLS on-the-fly → HTTP/2 and HTTP/3 frames become visible.
+        kwargs["override_prefs"] = {"tls.keylog_file": keylog}
+
+        print(f"[LiveCapture] TLS key-log: {keylog}")
 
         capture = pyshark.LiveCapture(**kwargs)
         try:
@@ -132,8 +189,10 @@ class LiveCapture:
     def start(self):
         self.thread = threading.Thread(target=self.capture_loop, daemon=True)
         self.thread.start()
-        print(f"[LiveCapture] Live capture started on interface [{self.interface}]!"
-              + (f" with filter '{self.bpf_filter}'" if self.bpf_filter else ""))
+        print(
+            f"[LiveCapture] Live capture started on interface [{self.interface}]"
+            + (f" with filter '{self.bpf_filter}'" if self.bpf_filter else "")
+        )
 
     def stop(self):
         self.stop_event.set()

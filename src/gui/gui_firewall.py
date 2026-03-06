@@ -4,7 +4,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 
-from src.firewall.firewall_engine import Firewall, MODEL_PATH  # noqa: F401 (re-exported)
+from src.firewall.firewall_engine import Firewall
 from src.gui.event_bus import GUIEventBus
 
 

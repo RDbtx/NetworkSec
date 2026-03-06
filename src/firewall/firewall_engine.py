@@ -121,6 +121,7 @@ class Firewall:
             block: bool = False,
             warmup_packets: int = 500,
             batch_size: int = 1,
+            keylog_file: str = None,
     ):
 
         self.block = block
@@ -139,7 +140,8 @@ class Firewall:
         self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
 
         # Capture
-        self.capture = LiveCapture(interface=interface, bpf_filter=bpf_filter)
+        self.capture = LiveCapture(interface=interface, bpf_filter=bpf_filter,
+                                   keylog_file=keylog_file)
 
         # Stats
         self.stats = {name: 0 for name in self.label_names}
@@ -360,4 +362,3 @@ class Firewall:
         except KeyboardInterrupt:
             print("\n[Firewall] Shutting down...")
             self.capture.stop()
-

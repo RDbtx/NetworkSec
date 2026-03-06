@@ -122,6 +122,7 @@ def _build_app(page: ft.Page):
                     bpf_filter=None,
                     block=True,
                     warmup_packets=100,
+                    keylog_file=None,
                     batch_size=8,
                 )
                 fw_ref[0] = fw
