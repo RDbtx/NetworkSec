@@ -14,7 +14,7 @@ from src.firewall.data_extraction import LiveCapture
 from collections import defaultdict, deque
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
-MODEL_PATH = os.path.join(SRC_PATH, "./model/output/saved_models/Blackwall.joblib")
+MODEL_PATH = os.path.join(SRC_PATH, "./firewall/model/Blackwall.joblib")
 DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 
 # Classes that trigger a block action
@@ -266,11 +266,11 @@ class Firewall:
             self.blocked_ips.add(ip)
             print(f"[Firewall] OS rule failed for {ip}, tracked only: {e}")
 
-    def unblock_ip(self, ip: str):
+    def unblock_ip(self, ip: str) -> bool:  # Added return type hint
         if not self.block:
             self.blocked_ips.discard(ip)
             print(f"[Firewall] [SIM] Removed {ip} from simulation block list")
-            return
+            return True  # Success in simulation
 
         system = platform.system()
         try:
@@ -280,8 +280,9 @@ class Firewall:
                     check=True, capture_output=True
                 )
             elif system == "Linux":
+                # Note: Linux often needs 'sudo' as well unless running as root
                 subprocess.run(
-                    ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
+                    ["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
                     check=True, capture_output=True
                 )
             elif system == "Windows":
@@ -290,10 +291,15 @@ class Firewall:
                      f"name=Blackwall_Block_{ip}"],
                     check=True, capture_output=True
                 )
+
+            # Only discard from internal set if the OS command succeeded
             self.blocked_ips.discard(ip)
             print(f"[Firewall] Unblocked {ip}!")
+            return True  # Success!
+
         except subprocess.CalledProcessError as e:
-            print(f"[Firewall] Failed to unblock {ip}: {e}")
+            print(f"[Firewall] Failed to unblock {ip}: {e.stderr.decode() if e.stderr else e}")
+            return False  # Failure!
 
     def print_stats(self):
         elapsed = time.time() - self.start_time

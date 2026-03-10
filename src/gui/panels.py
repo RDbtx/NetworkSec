@@ -181,13 +181,13 @@ def build_traffic_panel():
         traffic_table.rows.insert(
             0,
             ft.DataRow(cells=[
-                ft.DataCell(text_ui(ts,     TEXT_DIM, SZ)),
-                ft.DataCell(text_ui(action, ac,       SZ, ft.FontWeight.BOLD)),
-                ft.DataCell(text_ui(ip,     TEXT,     SZ)),
-                ft.DataCell(text_ui(label,  lc,       SZ)),
+                ft.DataCell(text_ui(ts, TEXT_DIM, SZ)),
+                ft.DataCell(text_ui(action, ac, SZ, ft.FontWeight.BOLD)),
+                ft.DataCell(text_ui(ip, TEXT, SZ)),
+                ft.DataCell(text_ui(label, lc, SZ)),
             ]),
         )
-        if len(traffic_table.rows) > 200:
+        if len(traffic_table.rows) > 50:
             traffic_table.rows.pop()
 
     def clear():
@@ -204,11 +204,14 @@ def build_traffic_panel():
 
 def build_stats_panel():
     """Returns (panel_control, update_stats_fn, clear_fn)."""
-    _m0 = text_ui("--", TEXT_DIM, SZ); _m0.width = 70
-    _m1 = text_ui("--", TEXT_DIM, SZ); _m1.width = 70
-    _m2 = text_ui("--", TEXT_DIM, SZ); _m2.width = 70
-    meta_row   = ft.Row(controls=[_m0, _m1, _m2], spacing=16)
-    rows_col   = ft.Column(spacing=3)
+    _m0 = text_ui("--", TEXT_DIM, SZ);
+    _m0.width = 70
+    _m1 = text_ui("--", TEXT_DIM, SZ);
+    _m1.width = 70
+    _m2 = text_ui("--", TEXT_DIM, SZ);
+    _m2.width = 70
+    meta_row = ft.Row(controls=[_m0, _m1, _m2], spacing=16)
+    rows_col = ft.Column(spacing=3)
 
     def update_stats(elapsed, total, pps, label_counts, label_names):
         NAME_W, COUNT_W, PCT_W = 170, 55, 70
@@ -217,21 +220,21 @@ def build_stats_panel():
         _m2.value = f"UP {elapsed:.0f} s"
         rows_col.controls.clear()
 
-        names  = list(label_names)
+        names = list(label_names)
         normal = [n for n in names if n.lower() == "normal"]
         others = sorted([n for n in names if n.lower() != "normal"],
                         key=lambda n: label_counts.get(n, 0), reverse=True)
         for name in normal + others:
-            count  = label_counts.get(name, 0)
-            pct    = 100 * count / total if total else 0.0
-            bar_w  = max(1, int(pct * 1.2))
+            count = label_counts.get(name, 0)
+            pct = 100 * count / total if total else 0.0
+            bar_w = max(1, int(pct * 1.2))
             rows_col.controls.append(
                 ft.Column([
                     ft.Row([
-                        ft.Container(width=NAME_W,  content=text_ui(name,          TEXT,     SZ)),
+                        ft.Container(width=NAME_W, content=text_ui(name, TEXT, SZ)),
                         ft.Container(width=COUNT_W, alignment=ft.Alignment.CENTER_RIGHT,
                                      content=text_ui(str(count), TEXT, SZ, ft.FontWeight.BOLD)),
-                        ft.Container(width=PCT_W,   alignment=ft.Alignment.CENTER_RIGHT,
+                        ft.Container(width=PCT_W, alignment=ft.Alignment.CENTER_RIGHT,
                                      content=text_ui(f"{pct:.1f}%", TEXT_DIM, SZ)),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Container(
@@ -270,6 +273,7 @@ def build_blocked_panel(fw_ref, bus_ref, push_log, page):
     def update_blocked(ips: set):
         blocked_badge.content.value = str(len(ips))
         blocked_col.controls.clear()
+
         if not ips:
             blocked_col.controls.append(
                 ft.Row([
@@ -283,12 +287,21 @@ def build_blocked_panel(fw_ref, bus_ref, push_log, page):
                     def _unblock(_):
                         fw = fw_ref[0]
                         if fw:
-                            fw.unblock_ip(target_ip)
-                            push_log(f"[Firewall] Unblocked {target_ip}", "info")
-                            bus = bus_ref[0]
-                            if bus:
-                                bus.post_blocked_ips(fw.blocked_ips)
+                            # CHECK IF SUCCESSFUL
+                            if fw.unblock_ip(target_ip):
+                                push_log(f"[Firewall] Unblocked {target_ip}", "info")
+
+                                bus = bus_ref[0]
+                                if bus:
+                                    bus.post_blocked_ips(fw.blocked_ips)
+
+                                # Only refresh UI if backend successfully changed
+                                update_blocked(fw.blocked_ips)
+                            else:
+                                push_log(f"[Firewall] FAILED to unblock {target_ip} (Check Sudo)", "danger")
+
                             page.update()
+
                     return _unblock
 
                 blocked_col.controls.append(
@@ -299,20 +312,18 @@ def build_blocked_panel(fw_ref, bus_ref, push_log, page):
                         ft.TextButton(
                             "✕",
                             on_click=make_unblock(ip),
-                            style=ft.ButtonStyle(
-                                color={ft.ControlState.DEFAULT: TEXT_MUTED,
-                                       ft.ControlState.HOVERED: DANGER},
-                                padding=ft.Padding.all(0),
-                            ),
+                            # ... rest of your styling
                         ),
                     ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                 )
+        # Ensure the change is visible if update_blocked is called from elsewhere
+        page.update()
 
     # ── manual unblock input ──────────────────────────────────────────────────
     unblock_input = ft.TextField(
         hint_text="IP address...",
         hint_style=ft.TextStyle(font_family=FONT, color=TEXT_MUTED, size=SZ),
-        text_style=ft.TextStyle(font_family=FONT, color=TEXT,       size=SZ),
+        text_style=ft.TextStyle(font_family=FONT, color=TEXT, size=SZ),
         bgcolor=BG,
         border_color=BORDER,
         focused_border_color=BORDER,
@@ -324,20 +335,23 @@ def build_blocked_panel(fw_ref, bus_ref, push_log, page):
 
     def do_unblock(_):
         ip = (unblock_input.value or "").strip()
-        if not ip:
-            return
+        if not ip: return
+
         fw = fw_ref[0]
         if fw:
             if ip not in fw.blocked_ips:
                 push_log(f"[Firewall] {ip} is not in the blocked list", "warn")
             else:
-                fw.unblock_ip(ip)
-                push_log(f"[Firewall] Unblocked {ip}", "info")
-                bus = bus_ref[0]
-                if bus:
-                    bus.post_blocked_ips(fw.blocked_ips)
-        else:
-            push_log(f"[Firewall] No active session to unblock {ip}", "warn")
+                # CHECK IF SUCCESSFUL
+                if fw.unblock_ip(ip):
+                    push_log(f"[Firewall] Unblocked {ip}", "info")
+                    bus = bus_ref[0]
+                    if bus:
+                        bus.post_blocked_ips(fw.blocked_ips)
+                    update_blocked(fw.blocked_ips)  # Refresh the list
+                else:
+                    push_log(f"[Firewall] FAILED to unblock {ip}", "danger")
+
         unblock_input.value = ""
         page.update()
 

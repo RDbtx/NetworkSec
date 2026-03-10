@@ -43,7 +43,6 @@ def resource_path(relative_path: str) -> str:
 
 
 def _build_app(page: ft.Page):
-    # shared state
     bus_ref: list = [None]
     fw_ref: list = [None]
     fw_thread: list = [None]
