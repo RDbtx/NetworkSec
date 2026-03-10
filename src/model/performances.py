@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-XGBOOST_RESULT_DIR = "output/results/xgboost/"
+BASEDIR = "output/results/"
 
 
 def to_class_indices(y: np.ndarray) -> np.ndarray:
@@ -43,7 +43,7 @@ def model_performances_report_generation(accuracy, precision, recall, f1_macro, 
     - model_name:  Name of the model (used for file naming).
 
     """
-    report_dir = os.path.join(XGBOOST_RESULT_DIR, "reports")
+    report_dir = os.path.join(BASEDIR, "reports")
     os.makedirs(report_dir, exist_ok=True)
 
     print("Performance Report generation...")
@@ -62,7 +62,9 @@ def model_performances_report_generation(accuracy, precision, recall, f1_macro, 
     ]
     output = "\n".join(report_str)
 
-    file_path = os.path.join(report_dir, f"{model_name}_{scenario}_performances_report.txt")
+    results_dir = os.path.join(report_dir, model_name)
+    os.makedirs(results_dir, exist_ok=True)
+    file_path = os.path.join(results_dir, f"{model_name}_{scenario}_performances_report.txt")
     with open(file_path, "w") as f:
         f.write(output)
     print(f"Results saved to {file_path}")
@@ -122,8 +124,10 @@ def model_performances_multiclass(labels_names: list, y_true: np.ndarray, y_pred
     plt.ylabel("True Label", fontsize=12)
     plt.tight_layout()
 
-    os.makedirs(XGBOOST_RESULT_DIR, exist_ok=True)
-    plot_path = os.path.join(XGBOOST_RESULT_DIR, f"{model_name}_{scenario}_conf_matrix.png")
+    matrices_dir = os.path.join(BASEDIR, "matrices")
+    results_dir = os.path.join(matrices_dir, model_name)
+    os.makedirs(results_dir, exist_ok=True)
+    plot_path = os.path.join(results_dir, f"{model_name}_{scenario}_conf_matrix.png")
     plt.savefig(plot_path)
     plt.show()
     print(f"Confusion matrix saved to {plot_path}")

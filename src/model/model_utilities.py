@@ -6,7 +6,6 @@ import pandas as pd
 from performances import model_performances_multiclass, model_performances_report_generation
 from sklearn.preprocessing import LabelEncoder
 
-MODEL_NAME = "XGBOOST"
 INPUT_PATH = "./output/"
 
 # =====================================
@@ -26,6 +25,7 @@ LABEL_MAP = {
     "http2-concurrent": "HTTP/2-attacks",
     "http2-pause": "HTTP/2-attacks",
 }
+
 
 # =====================================
 # ---    Main utility functions     ---
@@ -49,6 +49,7 @@ def extract_data():
     print(f"\nClasses: {labels_names}")
     return df, encoder, labels_names
 
+
 def save_model(model, encoder, model_name: str) -> None:
     """
     Saves the trained XGBoost model and its LabelEncoder to a joblib file
@@ -68,7 +69,7 @@ def save_model(model, encoder, model_name: str) -> None:
     print(f"Model saved to {save_path}")
 
 
-def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray):
+def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_name):
     """
     Trains the XGBoost model and evaluates performance on the training set.
 
@@ -97,15 +98,15 @@ def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray):
     print(f"Prediction time: {(time.time() - pred_time):.1f} s")
 
     accuracy, precision, recall, f1_macro, f1_micro, auc, class_report, cm = \
-        model_performances_multiclass(labels_names, y, train_predictions, train_probabilities, "TRAINING", MODEL_NAME)
+        model_performances_multiclass(labels_names, y, train_predictions, train_probabilities, "TRAINING", model_name)
 
     model_performances_report_generation(accuracy, precision, recall, f1_macro, f1_micro,
-                                         auc, class_report, cm, "TRAINING", MODEL_NAME)
+                                         auc, class_report, cm, "TRAINING", model_name)
 
     return model, train_predictions
 
 
-def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray):
+def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_name: str):
     """
     Evaluates the trained XGBoost model on the test set and saves a performance report.
 
@@ -128,9 +129,9 @@ def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray):
     print("----TESTING COMPLETED----\n")
 
     accuracy, precision, recall, f1_macro, f1_micro, auc, class_report, cm = \
-        model_performances_multiclass(labels_names, y, test_predictions, test_probabilities, "TESTING", MODEL_NAME)
+        model_performances_multiclass(labels_names, y, test_predictions, test_probabilities, "TESTING", model_name)
 
     model_performances_report_generation(accuracy, precision, recall, f1_macro, f1_micro,
-                                         auc, class_report, cm, "TESTING", MODEL_NAME)
+                                         auc, class_report, cm, "TESTING", model_name)
 
     return test_predictions
