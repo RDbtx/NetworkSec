@@ -20,7 +20,7 @@ DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 # Classes that trigger a block action
 TO_BLOCK_IMMEDIATELY = {"HTTP/2-attacks"}
 TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris", "Transport-layer"}
-DDOS_STRIKES_TO_BLOCK = 5
+DDOS_STRIKES_TO_BLOCK = 100
 DDOS_WINDOW_SECONDS = 60
 
 
@@ -120,6 +120,16 @@ class LivePreprocessor:
         return False
 
 
+def get_interface_ip(interface_name: str) -> str | None:
+    """Return the IPv4 address of the given network interface, or None."""
+    addresses = psutil.net_if_addrs()
+    if interface_name in addresses:
+        for addr in addresses[interface_name]:
+            if addr.family == socket.AF_INET:
+                return addr.address
+    return None
+
+
 # ===========================================
 # ---             Firewall                ---
 # ===========================================
@@ -151,17 +161,9 @@ class Firewall:
 
         self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
 
-        def get_interface_ip(interface_name):
-            addresses = psutil.net_if_addrs()
-            if interface_name in addresses:
-                for addr in addresses[interface_name]:
-                    if addr.family == socket.AF_INET:  # Look for IPv4
-                        return addr.address
-            return None
-
         machine_ip = get_interface_ip(interface)
         if machine_ip:
-            bpf = f"host {machine_ip}"
+            bpf = f"dst host {machine_ip} || dst host 127.0.0.1"
             if bpf_filter:
                 bpf = f"({bpf_filter}) and ({bpf})"
         else:
@@ -221,35 +223,35 @@ class Firewall:
         self.stats[label] = self.stats.get(label, 0) + 1
 
         if label in TO_BLOCK_IMMEDIATELY or label in TO_BLOCK_AFTER_N_INSTANCES:
-            print(f"[WARNING] ⚠  Attack detected: {label:<25} | src={source_ip or 'unknown'}")
+            print(f"[WARNING] ⚠  Attack detected: {label:<25} |\tsrc== {source_ip or 'unknown'}")
             if self.should_block_ip(source_ip, label):
-                self.block_ip(source_ip)
-                if source_ip:
-                    self.ddos_strikes[source_ip].clear()
+                success = self.block_ip(source_ip)
+                if success:
+                    if source_ip:
+                        self.ddos_strikes[source_ip].clear()
+                else:
+                    print(f"[Firewall] BLOCK FAILED for {source_ip} — check sudo permissions")
 
         else:
             print(f"[ALLOW] ✓  Normal traffic from {source_ip or 'unknown':<25} | label={label}")
 
-    def block_ip(self, ip: str):
+    def block_ip(self, ip: str) -> bool:
         if not self.block:
             # Simulation mode: track without actually blocking
             self.blocked_ips.add(ip)
             print(f"[Firewall] [SIM] Would block {ip} (block=False, simulation only)")
-            return
+            return True
 
-        import subprocess
-        import platform
         system = platform.system()
         try:
             if system == "Darwin":  # macOS — use pfctl
-                # Add to a pf anchor table
                 subprocess.run(
                     ["sudo", "pfctl", "-t", "blackwall_blocked", "-T", "add", ip],
                     check=True, capture_output=True
                 )
             elif system == "Linux":
                 subprocess.run(
-                    ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
+                    ["sudo", "iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
                     check=True, capture_output=True
                 )
             elif system == "Windows":
@@ -259,12 +261,14 @@ class Firewall:
                      f"remoteip={ip}"],
                     check=True, capture_output=True
                 )
+            # Only add to tracked set if the OS command actually succeeded
             self.blocked_ips.add(ip)
             print(f"[Firewall] Blocked {ip} ({system})")
+            return True
         except subprocess.CalledProcessError as e:
-            # Still track it in the GUI even if the OS rule failed
-            self.blocked_ips.add(ip)
-            print(f"[Firewall] OS rule failed for {ip}, tracked only: {e}")
+            # Do NOT add to blocked_ips — the OS rule failed, IP is not actually blocked
+            print(f"[Firewall] Failed to block {ip} (sudo/permissions error?): {e.stderr.decode() if e.stderr else e}")
+            return False
 
     def unblock_ip(self, ip: str) -> bool:  # Added return type hint
         if not self.block:

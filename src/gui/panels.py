@@ -1,8 +1,9 @@
 """
 panels.py — widget factories for every panel in the Blackwall GUI.
 
-Each builder returns a Flet control (or a tuple of control + updater callable)
-so that main.py only needs to wire them together, not build them.
+Each panel is a class that owns its Flet controls and exposes public
+update methods. build_* factory functions are kept as thin constructors
+so main.py call-sites are unchanged.
 """
 
 from datetime import datetime
@@ -123,13 +124,22 @@ def stat_card(title, widget, accent) -> ft.Container:
 
 # ── System Log ────────────────────────────────────────────────────────────────
 
-def build_log_panel():
-    """Returns (panel_control, push_log_fn)."""
-    log_col = ft.Column(spacing=1)
+class LogPanel:
+    """Owns the system-log column and exposes push() to append entries."""
 
-    def push_log(msg: str, level: str = "info"):
+    MAX_ENTRIES = 400
+
+    def __init__(self):
+        self.log_col = ft.Column(spacing=1)
+        self.control = panel("SYSTEM LOG", hvscroll(self.log_col, pad=8),
+                             expand=3, icon="▓▓")
+
+    def clear(self):
+        self.log_col.controls.clear()
+
+    def push(self, msg: str, level: str = "info"):
         color = DANGER if level == "danger" else TEXT
-        log_col.controls.append(
+        self.log_col.controls.append(
             ft.Row(
                 spacing=5,
                 controls=[
@@ -144,97 +154,134 @@ def build_log_panel():
                 ],
             )
         )
-        if len(log_col.controls) > 400:
-            log_col.controls.pop(0)
+        if len(self.log_col.controls) > self.MAX_ENTRIES:
+            self.log_col.controls.pop(0)
 
-    log_panel = panel("SYSTEM LOG", hvscroll(log_col, pad=8), expand=3, icon="▓▓")
-    return log_panel, push_log
+
+def build_log_panel():
+    """Returns (panel_control, push_fn, clear_fn)."""
+    lp = LogPanel()
+    return lp.control, lp.push, lp.clear
 
 
 # ── Live Traffic Matrix ───────────────────────────────────────────────────────
 
-def build_traffic_panel():
-    """Returns (panel_control, push_row_fn, clear_fn)."""
-
-    def hdr(lbl):
-        return ft.DataColumn(
-            ft.Text(lbl, color=ACCENT, size=SZ,
-                    font_family=FONT, weight=ft.FontWeight.BOLD)
-        )
-
-    traffic_table = ft.DataTable(
-        columns=[hdr("TIME"), hdr("ACTION"), hdr("IP ADDRESS"), hdr("LABEL")],
-        rows=[],
-        border=ft.Border.all(1, BORDER + "55"),
-        heading_row_color={"": "#0d1a09"},
-        heading_row_height=26,
-        data_row_min_height=22,
-        data_row_max_height=22,
-        divider_thickness=0,
-        column_spacing=10,
+def make_traffic_column(label: str) -> ft.DataColumn:
+    return ft.DataColumn(
+        ft.Text(label, color=ACCENT, size=SZ,
+                font_family=FONT, weight=ft.FontWeight.BOLD)
     )
 
-    def push_row(ts, action, ip, label):
-        is_attack = action == "WARNING"
-        ac = DANGER if is_attack else SUCCESS
-        lc = DANGER if is_attack else TEXT
-        traffic_table.rows.insert(
+
+class TrafficPanel:
+    """Owns the live-traffic DataTable and exposes push_row() / clear()."""
+
+    MAX_ROWS = 200
+
+    def __init__(self):
+        self.table = ft.DataTable(
+            columns=[
+                make_traffic_column("TIME"),
+                make_traffic_column("ACTION"),
+                make_traffic_column("IP ADDRESS"),
+                make_traffic_column("LABEL"),
+            ],
+            rows=[],
+            border=ft.Border.all(1, BORDER + "55"),
+            heading_row_color={"": "#0d1a09"},
+            heading_row_height=26,
+            data_row_min_height=22,
+            data_row_max_height=22,
+            divider_thickness=0,
+            column_spacing=10,
+        )
+        wrap = ft.Container(content=self.table, expand=True,
+                            clip_behavior=ft.ClipBehavior.HARD_EDGE)
+        self.control = panel("THREAT TRAFFIC MATRIX", vscroll(wrap, pad=8),
+                             expand=5, icon="▓▓")
+
+    def push_row(self, ts: str, action: str, ip: str, label: str):
+        if action != "WARNING":
+            return
+        self.table.rows.insert(
             0,
             ft.DataRow(cells=[
                 ft.DataCell(text_ui(ts, TEXT_DIM, SZ)),
-                ft.DataCell(text_ui(action, ac, SZ, ft.FontWeight.BOLD)),
+                ft.DataCell(text_ui(action, DANGER, SZ, ft.FontWeight.BOLD)),
                 ft.DataCell(text_ui(ip, TEXT, SZ)),
-                ft.DataCell(text_ui(label, lc, SZ)),
+                ft.DataCell(text_ui(label, DANGER, SZ)),
             ]),
         )
-        if len(traffic_table.rows) > 50:
-            traffic_table.rows.pop()
+        if len(self.table.rows) > self.MAX_ROWS:
+            self.table.rows.pop()
 
-    def clear():
-        traffic_table.rows.clear()
+    def clear(self):
+        self.table.rows.clear()
 
-    wrap = ft.Container(content=traffic_table, expand=True,
-                        clip_behavior=ft.ClipBehavior.HARD_EDGE)
-    traffic_panel = panel("LIVE TRAFFIC MATRIX", vscroll(wrap, pad=8),
-                          expand=5, icon="▓▓")
-    return traffic_panel, push_row, clear
+
+def build_traffic_panel():
+    """Returns (panel_control, push_row_fn, clear_fn)."""
+    tp = TrafficPanel()
+    return tp.control, tp.push_row, tp.clear
 
 
 # ── Classification Stats ──────────────────────────────────────────────────────
 
-def build_stats_panel():
-    """Returns (panel_control, update_stats_fn, clear_fn)."""
-    _m0 = text_ui("--", TEXT_DIM, SZ);
-    _m0.width = 70
-    _m1 = text_ui("--", TEXT_DIM, SZ);
-    _m1.width = 70
-    _m2 = text_ui("--", TEXT_DIM, SZ);
-    _m2.width = 70
-    meta_row = ft.Row(controls=[_m0, _m1, _m2], spacing=16)
-    rows_col = ft.Column(spacing=3)
+class StatsPanel:
+    """Owns the classification-stats column and exposes update() / clear()."""
 
-    def update_stats(elapsed, total, pps, label_counts, label_names):
-        NAME_W, COUNT_W, PCT_W = 170, 55, 70
-        _m0.value = f"PKT {total}"
-        _m1.value = f"pkt/s {pps:.1f}"
-        _m2.value = f"UP {elapsed:.0f} s"
-        rows_col.controls.clear()
+    NAME_W = 170
+    COUNT_W = 55
+    PCT_W = 70
+
+    def __init__(self):
+        self.meta_pkt = text_ui("--", TEXT_DIM, SZ)
+        self.meta_pkt.width = 70
+        self.meta_pps = text_ui("--", TEXT_DIM, SZ)
+        self.meta_pps.width = 70
+        self.meta_up = text_ui("--", TEXT_DIM, SZ)
+        self.meta_up.width = 70
+
+        meta_row = ft.Row(controls=[self.meta_pkt, self.meta_pps, self.meta_up], spacing=16)
+        self.rows_col = ft.Column(spacing=3)
+
+        body = ft.Column(
+            [meta_row, ydiv(), self.rows_col],
+            spacing=4,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+        self.control = panel("CLASSIFICATION STATS", vscroll(body, pad=8),
+                             expand=3, icon="◈◈")
+
+    def update(self, elapsed: float, total: int, pps: float,
+               label_counts: dict, label_names: list):
+        self.meta_pkt.value = f"PKT {total}"
+        self.meta_pps.value = f"pkt/s {pps:.1f}"
+        self.meta_up.value = f"UP {elapsed:.0f} s"
+        self.rows_col.controls.clear()
 
         names = list(label_names)
         normal = [n for n in names if n.lower() == "normal"]
-        others = sorted([n for n in names if n.lower() != "normal"],
-                        key=lambda n: label_counts.get(n, 0), reverse=True)
+        others = sorted(
+            [n for n in names if n.lower() != "normal"],
+            key=lambda n: label_counts.get(n, 0),
+            reverse=True,
+        )
         for name in normal + others:
             count = label_counts.get(name, 0)
             pct = 100 * count / total if total else 0.0
             bar_w = max(1, int(pct * 1.2))
-            rows_col.controls.append(
+            self.rows_col.controls.append(
                 ft.Column([
                     ft.Row([
-                        ft.Container(width=NAME_W, content=text_ui(name, TEXT, SZ)),
-                        ft.Container(width=COUNT_W, alignment=ft.Alignment.CENTER_RIGHT,
-                                     content=text_ui(str(count), TEXT, SZ, ft.FontWeight.BOLD)),
-                        ft.Container(width=PCT_W, alignment=ft.Alignment.CENTER_RIGHT,
+                        ft.Container(width=self.NAME_W,
+                                     content=text_ui(name, TEXT, SZ)),
+                        ft.Container(width=self.COUNT_W,
+                                     alignment=ft.Alignment.CENTER_RIGHT,
+                                     content=text_ui(str(count), TEXT, SZ,
+                                                     ft.FontWeight.BOLD)),
+                        ft.Container(width=self.PCT_W,
+                                     alignment=ft.Alignment.CENTER_RIGHT,
                                      content=text_ui(f"{pct:.1f}%", TEXT_DIM, SZ)),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Container(
@@ -244,38 +291,140 @@ def build_stats_panel():
                 ], spacing=1)
             )
 
-    def clear():
-        rows_col.controls.clear()
+    def clear(self):
+        self.rows_col.controls.clear()
 
-    body = ft.Column([meta_row, ydiv(), rows_col], spacing=4,
-                     horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
-    stats_panel = panel("CLASSIFICATION STATS", vscroll(body, pad=8),
-                        expand=3, icon="◈◈")
-    return stats_panel, update_stats, clear
+
+def build_stats_panel():
+    """Returns (panel_control, update_fn, clear_fn)."""
+    sp = StatsPanel()
+    return sp.control, sp.update, sp.clear
 
 
 # ── Blocked IPs ───────────────────────────────────────────────────────────────
 
-def build_blocked_panel(fw_ref, bus_ref, push_log, page):
-    """Returns (panel_control, update_blocked_fn)."""
+class BlockedPanel:
+    """
+    Owns the blocked-IP list, badge, and manual-unblock input.
+    Requires references to fw_ref, bus_ref, a push_log callable, and the page.
+    """
 
-    blocked_badge = ft.Container(
-        content=ft.Text("0", font_family=FONT, color=HEADER_FG,
-                        size=SZ, weight=ft.FontWeight.BOLD),
-        bgcolor=HEADER_FG + "22",
-        border=ft.Border.all(1, HEADER_FG),
-        padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-        margin=ft.Margin(right=4, left=0, top=0, bottom=0),
-    )
+    def __init__(self, fw_ref: list, bus_ref: list, push_log, page: ft.Page):
+        self.fw_ref = fw_ref
+        self.bus_ref = bus_ref
+        self.push_log = push_log
+        self.page = page
 
-    blocked_col = ft.Column(spacing=4)
+        self.badge = ft.Container(
+            content=ft.Text("0", font_family=FONT, color=HEADER_FG,
+                            size=SZ, weight=ft.FontWeight.BOLD),
+            bgcolor=HEADER_FG + "22",
+            border=ft.Border.all(1, HEADER_FG),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            margin=ft.Margin(right=4, left=0, top=0, bottom=0),
+        )
 
-    def update_blocked(ips: set):
-        blocked_badge.content.value = str(len(ips))
-        blocked_col.controls.clear()
+        self.blocked_col = ft.Column(spacing=4)
+
+        self.unblock_input = ft.TextField(
+            hint_text="IP address...",
+            hint_style=ft.TextStyle(font_family=FONT, color=TEXT_MUTED, size=SZ),
+            text_style=ft.TextStyle(font_family=FONT, color=TEXT, size=SZ),
+            bgcolor=BG,
+            border_color=BORDER,
+            focused_border_color=BORDER,
+            border_radius=0,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            expand=True,
+            height=32,
+        )
+
+        unblock_btn = ft.IconButton(
+            icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,
+            icon_color=DANGER,
+            icon_size=16,
+            on_click=self.on_manual_unblock,
+            tooltip="Unblock IP",
+            style=ft.ButtonStyle(
+                bgcolor={ft.ControlState.DEFAULT: BG,
+                         ft.ControlState.HOVERED: "#2a0810"},
+                shape=ft.RoundedRectangleBorder(radius=0),
+                side=ft.BorderSide(1, DANGER),
+                padding=ft.Padding.all(4),
+            ),
+        )
+
+        unblock_section = ft.Container(
+            content=ft.Column([
+                ft.Container(height=1, bgcolor=BORDER),
+                ft.Container(
+                    content=ft.Column([
+                        label_text("MANUAL UNBLOCK"),
+                        ft.Row([self.unblock_input, unblock_btn], spacing=4),
+                    ], spacing=4),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                ),
+            ], spacing=0),
+            bgcolor=PANEL2,
+        )
+
+        self.control = ft.Container(
+            expand=2,
+            bgcolor=CELL_BG,
+            border=ft.Border.all(1, BORDER),
+            border_radius=0,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Column(
+                [
+                    panel_header("BLOCKED IPs", "██", trailing=self.badge),
+                    ft.Container(content=hvscroll(self.blocked_col, pad=8), expand=True),
+                    unblock_section,
+                ],
+                spacing=0, expand=True,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+        )
+
+        self.update(set())
+
+    def do_unblock(self, ip: str):
+        """Perform the unblock and post bus event. Returns True on success."""
+        fw = self.fw_ref[0]
+        if not fw:
+            self.push_log(f"[Firewall] No active session to unblock {ip}", "warn")
+            return False
+        if ip not in fw.blocked_ips:
+            self.push_log(f"[Firewall] {ip} is not in the blocked list", "warn")
+            return False
+        success = fw.unblock_ip(ip)
+        if success:
+            self.push_log(f"[Firewall] Unblocked {ip}", "info")
+            bus = self.bus_ref[0]
+            if bus:
+                bus.post_blocked_ips(fw.blocked_ips)
+        else:
+            self.push_log(f"[Firewall] FAILED to unblock {ip} (check sudo)", "danger")
+        return success
+
+    def on_ip_unblock_click(self, ip: str):
+        """Click handler for the ✕ button next to a listed IP."""
+        self.do_unblock(ip)
+        self.page.update()
+
+    def on_manual_unblock(self, _):
+        """Click handler for the manual-unblock text field + button."""
+        ip = (self.unblock_input.value or "").strip()
+        if ip:
+            self.do_unblock(ip)
+        self.unblock_input.value = ""
+        self.page.update()
+
+    def update(self, ips: set):
+        self.badge.content.value = str(len(ips))
+        self.blocked_col.controls.clear()
 
         if not ips:
-            blocked_col.controls.append(
+            self.blocked_col.controls.append(
                 ft.Row([
                     ft.Container(width=4, height=4, bgcolor=TEXT_MUTED),
                     text_ui("none", TEXT_MUTED, SZ),
@@ -283,123 +432,32 @@ def build_blocked_panel(fw_ref, bus_ref, push_log, page):
             )
         else:
             for ip in sorted(ips):
-                def make_unblock(target_ip):
-                    def _unblock(_):
-                        fw = fw_ref[0]
-                        if fw:
-                            # CHECK IF SUCCESSFUL
-                            if fw.unblock_ip(target_ip):
-                                push_log(f"[Firewall] Unblocked {target_ip}", "info")
-
-                                bus = bus_ref[0]
-                                if bus:
-                                    bus.post_blocked_ips(fw.blocked_ips)
-
-                                # Only refresh UI if backend successfully changed
-                                update_blocked(fw.blocked_ips)
-                            else:
-                                push_log(f"[Firewall] FAILED to unblock {target_ip} (Check Sudo)", "danger")
-
-                            page.update()
-
-                    return _unblock
-
-                blocked_col.controls.append(
-                    ft.Row([
-                        ft.Container(width=6, height=6, bgcolor=DANGER),
-                        text_ui(ip, DANGER, SZ),
-                        ft.Container(expand=True),
-                        ft.TextButton(
-                            "✕",
-                            on_click=make_unblock(ip),
-                            # ... rest of your styling
-                        ),
-                    ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                self.blocked_col.controls.append(
+                    self.make_ip_row(ip)
                 )
-        # Ensure the change is visible if update_blocked is called from elsewhere
-        page.update()
 
-    # ── manual unblock input ──────────────────────────────────────────────────
-    unblock_input = ft.TextField(
-        hint_text="IP address...",
-        hint_style=ft.TextStyle(font_family=FONT, color=TEXT_MUTED, size=SZ),
-        text_style=ft.TextStyle(font_family=FONT, color=TEXT, size=SZ),
-        bgcolor=BG,
-        border_color=BORDER,
-        focused_border_color=BORDER,
-        border_radius=0,
-        content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
-        expand=True,
-        height=32,
-    )
-
-    def do_unblock(_):
-        ip = (unblock_input.value or "").strip()
-        if not ip: return
-
-        fw = fw_ref[0]
-        if fw:
-            if ip not in fw.blocked_ips:
-                push_log(f"[Firewall] {ip} is not in the blocked list", "warn")
-            else:
-                # CHECK IF SUCCESSFUL
-                if fw.unblock_ip(ip):
-                    push_log(f"[Firewall] Unblocked {ip}", "info")
-                    bus = bus_ref[0]
-                    if bus:
-                        bus.post_blocked_ips(fw.blocked_ips)
-                    update_blocked(fw.blocked_ips)  # Refresh the list
-                else:
-                    push_log(f"[Firewall] FAILED to unblock {ip}", "danger")
-
-        unblock_input.value = ""
-        page.update()
-
-    unblock_btn = ft.IconButton(
-        icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,
-        icon_color=DANGER,
-        icon_size=16,
-        on_click=do_unblock,
-        tooltip="Unblock IP",
-        style=ft.ButtonStyle(
-            bgcolor={ft.ControlState.DEFAULT: BG,
-                     ft.ControlState.HOVERED: "#2a0810"},
-            shape=ft.RoundedRectangleBorder(radius=0),
-            side=ft.BorderSide(1, DANGER),
-            padding=ft.Padding.all(4),
-        ),
-    )
-
-    unblock_section = ft.Container(
-        content=ft.Column([
-            ft.Container(height=1, bgcolor=BORDER),
-            ft.Container(
-                content=ft.Column([
-                    label_text("MANUAL UNBLOCK"),
-                    ft.Row([unblock_input, unblock_btn], spacing=4),
-                ], spacing=4),
-                padding=ft.Padding.symmetric(horizontal=8, vertical=6),
-            ),
-        ], spacing=0),
-        bgcolor=PANEL2,
-    )
-
-    blocked_panel = ft.Container(
-        expand=2,
-        bgcolor=CELL_BG,
-        border=ft.Border.all(1, BORDER),
-        border_radius=0,
-        clip_behavior=ft.ClipBehavior.HARD_EDGE,
-        content=ft.Column(
+    def make_ip_row(self, ip: str) -> ft.Row:
+        return ft.Row(
             [
-                panel_header("BLOCKED IPs", "██", trailing=blocked_badge),
-                ft.Container(content=hvscroll(blocked_col, pad=8), expand=True),
-                unblock_section,
+                ft.Container(width=6, height=6, bgcolor=DANGER),
+                text_ui(ip, DANGER, SZ),
+                ft.Container(expand=True),
+                ft.TextButton(
+                    "✕",
+                    on_click=lambda _, target=ip: self.on_ip_unblock_click(target),
+                    style=ft.ButtonStyle(
+                        color={ft.ControlState.DEFAULT: TEXT_MUTED,
+                               ft.ControlState.HOVERED: DANGER},
+                        padding=ft.Padding.all(0),
+                    ),
+                ),
             ],
-            spacing=0, expand=True,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        ),
-    )
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
 
-    update_blocked(set())
-    return blocked_panel, update_blocked
+
+def build_blocked_panel(fw_ref, bus_ref, push_log, page):
+    """Returns (panel_control, update_fn)."""
+    bp = BlockedPanel(fw_ref, bus_ref, push_log, page)
+    return bp.control, bp.update

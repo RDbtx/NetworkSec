@@ -1,10 +1,10 @@
 import re
+import builtins
 import subprocess
 import time
-from contextlib import contextmanager
 from datetime import datetime
 
-from src.firewall.firewall_engine import Firewall
+from src.firewall.firewall_engine import Firewall, MODEL_PATH  # noqa: F401 (re-exported)
 from src.gui.event_bus import GUIEventBus
 
 
@@ -33,68 +33,74 @@ class GUIFirewall(Firewall):
     """Firewall subclass that forwards events to the GUI via GUIEventBus."""
 
     def __init__(self, bus: GUIEventBus, **kwargs):
-        self._bus = bus
-        self._gui_allowed  = 0
-        self._gui_warnings = 0
-        self._gui_blocked  = 0
+        self.bus = bus
+        self.gui_allowed = 0
+        self.gui_warnings = 0
+        self.gui_blocked = 0
+        self.real_print = None
         super().__init__(**kwargs)
 
-    # ── print interception ────────────────────────────────────────────────────
-
-    @contextmanager
-    def _intercept_print(self):
-        import builtins
-        real_print = builtins.print
-        builtins.print = self._tap
-        try:
-            yield
-        finally:
-            builtins.print = real_print
-
-    def _tap(self, *args, **kwargs):
+    def tap_print(self, *args, **kwargs):
+        """Intercepts print calls and routes them to the event bus."""
         msg = " ".join(str(a) for a in args)
         if "[ALLOW]" in msg or "[BLOCK]" in msg or "Normal traffic from" in msg:
             return
-        level = "info"
         if "[WARNING]" in msg or "⚠" in msg:
-            level = "warn"
+            return
+        level = "info"
         if "Attack" in msg or "DROP" in msg:
             level = "danger"
         if "Loaded" in msg or "complete" in msg:
             level = "success"
         if "error" in msg.lower() or "fatal" in msg.lower():
             level = "danger"
-        self._bus.post_log(msg, level)
+        self.bus.post_log(msg, level)
 
-    # ── prediction hook ───────────────────────────────────────────────────────
+    def intercept_print_start(self):
+        self.real_print = builtins.print
+        builtins.print = self.tap_print
+
+    def intercept_print_stop(self):
+        if self.real_print is not None:
+            builtins.print = self.real_print
+            self.real_print = None
 
     def handle_prediction(self, label: str, source_ip: str):
         blocked_before = len(self.blocked_ips)
-        with self._intercept_print():
+        self.intercept_print_start()
+        try:
             super().handle_prediction(label, source_ip)
+        finally:
+            self.intercept_print_stop()
         blocked_after = len(self.blocked_ips)
 
         is_attack = label not in {"Normal", "BENIGN"}
         action = "WARNING" if is_attack else "ALLOW"
 
         if is_attack:
-            self._gui_warnings += 1
+            self.gui_warnings += 1
             if blocked_after > blocked_before:
-                self._gui_blocked += 1
+                self.gui_blocked += 1
+                self.bus.post_log(
+                    f"[Firewall] Blocked {source_ip or 'unknown'} — {label}", "danger"
+                )
         else:
-            self._gui_allowed += 1
+            self.gui_allowed += 1
 
         ts = datetime.now().strftime("%H:%M:%S")
-        self._bus.post_row(ts, action, source_ip or "unknown", label)
+        self.bus.post_row(ts, action, source_ip or "unknown", label)
 
         total = self.stats.get("total", 0)
-        self._bus.post_stat(self._gui_allowed, self._gui_warnings, total)
+        self.bus.post_stat(self.gui_allowed, self.gui_warnings, total)
 
         elapsed = time.time() - self.start_time
         pps = total / elapsed if elapsed > 0 else 0.0
-        self._bus.post_stats_panel(elapsed, total, pps, dict(self.stats), list(self.label_names))
-        self._bus.post_blocked_ips(self.blocked_ips)
+        self.bus.post_stats_panel(elapsed, total, pps, dict(self.stats), list(self.label_names))
+        self.bus.post_blocked_ips(self.blocked_ips)
 
     def run(self):
-        with self._intercept_print():
+        self.intercept_print_start()
+        try:
             super().run()
+        finally:
+            self.intercept_print_stop()
