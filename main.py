@@ -6,7 +6,7 @@ import sys
 import os
 import flet as ft
 
-from src.firewall.firewall_engine import MODEL_PATH
+from src.firewall.firewall_engine import MODEL_PATH, SCALER_PATH
 from src.gui.boot_screen import show_boot_screen
 from src.gui.event_bus import GUIEventBus
 from src.gui.gui_firewall import GUIFirewall, get_tshark_interfaces
@@ -143,12 +143,10 @@ class AppController:
         try:
             fw = GUIFirewall(
                 bus=bus,
-                model_path=resource_path(
-                    MODEL_PATH),
+                model_path=resource_path(MODEL_PATH),
                 interface=iface,
                 bpf_filter=None,
-                block=True,
-                warmup_packets=1,
+                block=False,
                 batch_size=8,
             )
             self.fw_ref[0] = fw
@@ -384,11 +382,12 @@ def main(page: ft.Page):
     page.window.min_height = 700
     page.fonts = {}
 
-    show_boot_screen(
+    """show_boot_screen(
         resource_path(LOGO_PATH),
         page,
         on_complete=lambda: (page.clean(), build_app(page)),
-    )
+    )"""
 
+    build_app(page)
 
 ft.run(main)
