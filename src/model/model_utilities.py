@@ -12,19 +12,32 @@ INPUT_PATH = "./output/"
 # ---       Label mapping           ---
 # =====================================
 
+# Each fine-grained attack label maps to itself — no collapsing.
+#
+# The previous mapping merged TCP-based and QUIC-based attacks into the same
+# class (e.g. "http-flood" and "quic-flood" both → "DDoS-flooding"), which
+# caused ~46% of DDoS-flooding packets to be misclassified as Normal because
+# the two protocol families occupy completely different regions of the feature
+# space after MinMax scaling.
+#
+# With 11 classes each label has an internally consistent feature distribution
+# and the model can learn clean decision boundaries.
 LABEL_MAP = {
     "Normal": "Normal",
-    "http-flood": "DDoS-flooding",
-    "http-stream": "DDoS-flooding",
-    "quic-flood": "DDoS-flooding",
-    "http-loris": "DDoS-loris",
-    "quic-loris": "DDoS-loris",
-    "fuzzing": "Transport-layer",
-    "quic-enc": "Transport-layer",
-    "http-smuggle": "HTTP/2-attacks",
-    "http2-concurrent": "HTTP/2-attacks",
-    "http2-pause": "HTTP/2-attacks",
+    "http-flood": "http-flood",
+    "quic-flood": "quic-flood",
+    "http-loris": "http-loris",
+    "quic-loris": "quic-loris",
+    "fuzzing": "fuzzing",
+    "quic-enc": "quic-enc",
+    "http-smuggle": "http-smuggle",
+    "http2-concurrent": "http2-concurrent",
+    "http2-pause": "http2-pause",
 }
+
+
+# Note: http-stream is excluded — too few samples, dropped from training.
+# The 10 entries above (Normal + 9 attacks) are the active classes.
 
 
 # =====================================
@@ -52,16 +65,14 @@ def extract_data():
 
 def save_model(model, encoder, model_name: str) -> None:
     """
-    Saves the trained XGBoost model and its LabelEncoder to a joblib file
-    inside the ../Models/ directory.
+    Saves the trained model and its LabelEncoder to a joblib file
+    inside the output/saved_models/ directory.
 
     Input:
-    - model: Trained XGBClassifier.
+    - model: Trained classifier.
     - encoder: Fitted LabelEncoder used to encode/decode class labels.
     - model_name: Base name for the saved file.
-
     """
-    import os
     models_dir = "output/saved_models/"
     os.makedirs(models_dir, exist_ok=True)
     save_path = models_dir + f"{model_name}_classifier.joblib"
@@ -71,10 +82,10 @@ def save_model(model, encoder, model_name: str) -> None:
 
 def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_name):
     """
-    Trains the XGBoost model and evaluates performance on the training set.
+    Trains the model and evaluates performance on the training set.
 
     Inputs:
-    - model: XGBClassifier instance to train.
+    - model: Classifier instance to train.
     - labels_names: List of class name strings (decoded from LabelEncoder).
     - x: np.ndarray of training features.
     - y: np.ndarray of encoded training labels (integers).
@@ -82,7 +93,6 @@ def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_n
     Outputs:
     - model: The trained classifier.
     - train_predictions: np.ndarray of predicted class indices on the training set.
-
     """
     print("\n----MODEL TRAINING STARTED----")
     print("Training model...")
@@ -108,7 +118,7 @@ def model_train(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_n
 
 def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_name: str):
     """
-    Evaluates the trained XGBoost model on the test set and saves a performance report.
+    Evaluates the trained model on the test set and saves a performance report.
 
     Input:
     - model: Trained model.
@@ -118,7 +128,6 @@ def model_test(model, labels_names: list, x: np.ndarray, y: np.ndarray, model_na
 
     Output:
     - test_predictions: np.ndarray of predicted class indices on the test set.
-
     """
     print("\n----MODEL TESTING----")
     print("Testing model...")

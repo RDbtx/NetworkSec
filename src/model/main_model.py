@@ -1,7 +1,6 @@
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from model_utilities import model_train, model_test, save_model
-from src.model.model_utilities import extract_data
+from model_utilities import model_train, model_test, save_model, extract_data
 from sklearn.ensemble import RandomForestClassifier
 import lightgbm as lgb
 
@@ -12,7 +11,7 @@ import lightgbm as lgb
 # LightGBM
 lgbm_multi = lgb.LGBMClassifier(
     objective='multiclass',
-    num_class=5,
+    num_class=10,  # 10 classes: Normal + 9 attack types
     n_estimators=500,
     learning_rate=0.05,
     max_depth=7,
@@ -28,7 +27,7 @@ lgbm_multi = lgb.LGBMClassifier(
 # XGBoost
 xgboost_model = xgb.XGBClassifier(
     objective="multi:softmax",
-    num_class=5,
+    num_class=10,  # 10 classes: Normal + 9 attack types
     n_estimators=500,
     learning_rate=0.05,
     max_depth=7,
@@ -70,9 +69,10 @@ if __name__ == "__main__":
     print(f"y_test shape:  {y_test.shape}")
 
     # Train, Test and Save Model
-    # lightboost_trained_model, lightboost_train_predictions = model_train(lgbm_multi, labels_names, x_train, y_train,"LGB_Blackwall")
-    boost_trained_model, boost_train_predictions = model_train(xgboost_model, labels_names, x_train, y_train, "XGB_Blackwall")
-    # random_trained_model, random_train_predictions = model_train(random_forest, labels_names, x_train, y_train,"RF_Blackwall")
+    # lightboost_trained_model, lightboost_train_predictions = model_train(lgbm_multi, labels_names, x_train, y_train, "LGB_Blackwall")
+    boost_trained_model, boost_train_predictions = model_train(xgboost_model, labels_names, x_train, y_train,
+                                                               "XGB_Blackwall")
+    # random_trained_model, random_train_predictions = model_train(random_forest, labels_names, x_train, y_train, "RF_Blackwall")
 
     # lightboost_test_predictions = model_test(lightboost_trained_model, labels_names, x_test, y_test, "LGB_Blackwall")
     boost_test_predictions = model_test(boost_trained_model, labels_names, x_test, y_test, "XGB_Blackwall")

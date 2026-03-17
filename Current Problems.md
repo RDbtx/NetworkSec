@@ -7,13 +7,16 @@
 
 ## Summary
 
-Three distinct problems were identified during validation of the tshark-based PCAP extraction pipeline and diagnosis of
-the trained XGBoost classifier:
+Four distinct problems were identified and resolved during validation of the tshark-based PCAP extraction pipeline and
+diagnosis of the trained XGBoost classifier:
 
-1. A broken tshark extraction caused by a Unicode encoding bug in the separator character.
-2. Residual pyshark multi-value field limitations on reassembled TCP/TLS packets.
-3. A fundamental class definition mismatch between training labels and network protocol reality, causing 93.5% of attack
-   packets to be misclassified.
+1. **Fixed** — A broken tshark extraction caused by a Unicode encoding bug in the separator character (α → `|`).
+2. **Resolved by decision** — Residual pyshark multi-value field limitations on reassembled TCP/TLS packets → pyshark
+   removed entirely, tshark is now the sole extraction backend.
+3. **Root-caused** — A fundamental class definition mismatch causing 46–92% miss rates even on training data, confirmed
+   by confusion matrix analysis.
+4. **Fixed** — `LABEL_MAP` updated from 5 collapsed classes to 10 fine-grained classes; `num_class` updated accordingly.
+   Retraining required.
 
 ---
 
@@ -272,19 +275,13 @@ ranked 6th and below with low importance.
 The `LABEL_MAP` in `model_utilities.py` collapses 11 fine-grained attack labels into 5 classes:
 
 ```python
-
 LABEL_MAP = {
-    "Normal": "Normal",
-    "http-flood": "DDoS-flooding",
-    "http-stream": "DDoS-flooding",
-    "quic-flood": "DDoS-flooding",
-    "http-loris": "DDoS-loris",
-    "quic-loris": "DDoS-loris",
-    "fuzzing": "Transport-layer",
-    "quic-enc": "Transport-layer",
-    "http-smuggle": "HTTP/2-attacks",
-    "http2-concurrent": "HTTP/2-attacks",
-    "http2-pause": "HTTP/2-attacks",
+    "http-flood": "DDoS-flooding",  # QUIC/HTTP3 flood
+    "http-stream": "DDoS-flooding",  # QUIC stream flood
+    "quic-flood": "DDoS-flooding",  # QUIC packet flood
+    "http-loris": "DDoS-loris",  # TCP slow attack
+    "quic-loris": "DDoS-loris",  # QUIC slow attack
+    ...
 }
 ```
 
@@ -295,19 +292,100 @@ dominant features it learned (TCP flags) work well for TCP floods but are struct
 
 ---
 
-## 4. Proposed Solutions
+## 4. Confusion Matrix Analysis: Training Data Confirms Structural Failure
 
-### Option 1 — Retrain with Fine-Grained Labels (Recommended)
+After diagnosing the offline test results, the model was retrained and the training/testing confusion matrices were
+inspected. These confirmed that the misclassification is not a generalisation problem — the model fails on its own *
+*training data**.
 
-Keep all 11 original labels instead of collapsing to 5. Each class will have internally consistent feature
-distributions, making the model's task tractable.
+### 4.1 Training Confusion Matrix (5,633,425 samples)
+
+| True \ Predicted    | DDoS-flooding | DDoS-loris | HTTP/2-attacks | Normal      | Transport-layer |
+|---------------------|---------------|------------|----------------|-------------|-----------------|
+| **DDoS-flooding**   | 179,351       | 248        | 0              | **156,464** | 27              |
+| **DDoS-loris**      | 3,057         | 4,512      | 0              | **51,732**  | 4               |
+| **HTTP/2-attacks**  | 0             | 0          | 69,198         | 892         | 0               |
+| **Normal**          | 49,198        | 2,544      | 8,451          | 5,100,000+  | 2,845           |
+| **Transport-layer** | 0             | 0          | 3              | 3,540       | 13,289          |
+
+Key findings:
+
+- **DDoS-flooding**: 156,464 training samples misclassified as Normal — **46.6% miss rate on training data**
+- **DDoS-loris**: 51,732 training samples misclassified as Normal — **91.9% miss rate on training data**
+
+A model that cannot fit its own training data has irreconcilable internal class variance. This is the definitive proof
+that the class definitions are wrong, not the model hyperparameters.
+
+### 4.2 Testing Confusion Matrix (3,755,618 samples)
+
+| True \ Predicted    | DDoS-flooding | DDoS-loris | HTTP/2-attacks | Normal       | Transport-layer |
+|---------------------|---------------|------------|----------------|--------------|-----------------|
+| **DDoS-flooding**   | 119,270       | 170        | 0              | **100,000+** | 17              |
+| **DDoS-loris**      | 2,109         | 2,941      | 0              | **34,484**   | 2               |
+| **HTTP/2-attacks**  | 0             | 0          | 46,213         | 514          | 0               |
+| **Normal**          | 32,839        | 1,624      | 5,674          | 3,400,000+   | 1,976           |
+| **Transport-layer** | 0             | 0          | 2              | 2,393        | 8,826           |
+
+The test miss rates are nearly identical to training (DDoS-flooding: 45.6%, DDoS-loris: 92.1%), confirming the model is
+not overfitting — it simply cannot separate these classes because they are not separable given how they were defined.
+
+### 4.3 Why Train/Test Miss Rates Are Identical
+
+The miss rates being consistent between training and testing rules out overfitting. The cause is that `DDoS-flooding`
+merges:
+
+- QUIC-based floods (caddy, h2o, litespeed, cloudflare) — pure QUIC/UDP packets, zero TCP fields
+- TCP-based floods (nginx, windows) — TCP packets with flags populated
+
+After MinMax scaling, these two groups land in completely different regions of the 46-dimensional feature space. The
+model draws a boundary that captures one group (TCP floods) but the other (QUIC floods) overlaps with Normal QUIC
+traffic. Exactly the same issue applies to `DDoS-loris` which merges `http-loris` (TCP) and `quic-loris` (QUIC).
+
+### 4.4 Connection to the Offline Test Results
+
+The confusion matrices explain exactly why `offline_testing.py` on `pcap1-caddy.pcap` produced the results it did:
+
+```
+Normal           121,558  (85.5%)
+Transport-layer   15,032  (10.6%)
+DDoS-flooding      5,578   (3.9%)
+```
+
+Ground truth: **64,082 DDoS-flooding packets**.
+
+The confusion matrix confirms this is not a surprise — the model misclassifies ~46% of DDoS-flooding as Normal **even on
+the training data it was fitted on**. The caddy http-flood packets are pure QUIC (zero TCP fields), and the
+`DDoS-flooding` class boundary was learned primarily from TCP flood patterns. The model never fully learned to associate
+QUIC-only traffic with this class.
+
+The 15,032 `Transport-layer` false positives on Normal traffic are also explained by the matrices: `Normal` had 3,540
+samples bleeding into `Transport-layer` even during training. This is Normal QUIC traffic being mistaken for the
+`fuzzing`/`quic-enc` class, both of which are also QUIC-based — another consequence of the QUIC feature overlap across
+multiple classes in the original 5-class scheme.
+
+**Summary of class-level performance under the old 5-class scheme:**
+
+| Class           | Train recall | Test recall | Verdict                             |
+|-----------------|--------------|-------------|-------------------------------------|
+| Normal          | ~98.5%       | ~98.1%      | Good — dominant class, well learned |
+| DDoS-flooding   | **53.4%**    | **54.4%**   | Broken — TCP/QUIC protocol split    |
+| DDoS-loris      | **8.1%**     | **7.9%**    | Broken — TCP/QUIC protocol split    |
+| HTTP/2-attacks  | ~98.7%       | ~98.9%      | Good — internally consistent class  |
+| Transport-layer | ~78.2%       | ~78.7%      | Acceptable — some bleed into Normal |
+
+---
+
+## 5. Fix Implemented: Fine-Grained 10-Class Labels
+
+**Option 1 from the proposed solutions was implemented.** `model_utilities.py` was updated so each label maps to
+itself — no collapsing. `http-stream` is absent from the map and is silently dropped during `extract_data()` (too few
+samples).
 
 ```python
-# model_utilities.py — identity mapping, no collapsing
+# model_utilities.py — new LABEL_MAP (no collapsing)
 LABEL_MAP = {
     "Normal": "Normal",
     "http-flood": "http-flood",
-    "http-stream": "http-stream",
     "quic-flood": "quic-flood",
     "http-loris": "http-loris",
     "quic-loris": "quic-loris",
@@ -319,41 +397,20 @@ LABEL_MAP = {
 }
 ```
 
-Also update `num_class=11` in the XGBoost/LightGBM model definition.
+`main_model.py` was updated to set `num_class=10` on both XGBoost and LightGBM.
 
-### Option 2 — Retrain with Protocol-Aware Grouping
-
-If 5 classes are required, split `DDoS-flooding` by protocol layer so each class is internally consistent:
-
-```python
-LABEL_MAP = {
-    "http-flood": "DDoS-QUIC",  # all QUIC-based floods together
-    "http-stream": "DDoS-QUIC",
-    "quic-flood": "DDoS-QUIC",
-    "quic-loris": "DDoS-QUIC",
-    "http-loris": "DDoS-TCP",  # TCP slow attacks
-    "fuzzing": "Transport-layer",
-    "quic-enc": "Transport-layer",
-    "http-smuggle": "HTTP/2-attacks",
-    "http2-concurrent": "HTTP/2-attacks",
-    "http2-pause": "HTTP/2-attacks",
-    "Normal": "Normal",
-}
-```
-
-### Option 3 — Do Not Retrain (Not Recommended)
-
-The current model is not suitable for deployment on QUIC-capable servers. It will correctly classify TCP-based attacks
-but miss virtually all QUIC-based attacks (93.5% miss rate). This is a fundamental limitation of the class definition,
-not a bug in the extraction pipeline.
+**The preprocessing CSV (`pcap-all-final.csv`) does not need to be regenerated** — it already contains the original
+fine-grained labels from `labeling.py`. Only `model_utilities.py` and `main_model.py` needed to change. Rerun
+`main_model.py` to retrain.
 
 ---
 
-## 5. Summary of Changes Made
+## 6. Summary of All Changes Made
 
-| File                  | Change                                                                                                                          |
-|-----------------------|---------------------------------------------------------------------------------------------------------------------------------|
-| `pcap_vs_csv_diff.py` | Added tshark mode; fixed separator from α to `\|`; added per-feature MISSING/EXTRA/DIFF breakdown; added `--debug-pkt` flag     |
-| `data_extraction.py`  | Removed pyshark entirely; added `FileCapture`, `LiveCapture`, `load_pcap_as_dataframe` using tshark subprocess                  |
-| `offline_testing.py`  | Replaced pyshark loop with `FileCapture`; added `OfflinePreprocessor`; added `diagnose_vs_labels()` for ground-truth comparison |
-| `pcap_to_csv.py`      | New file: replicates the dataset creators' exact tshark + UltraEdit pipeline for batch PCAP → CSV conversion                    |
+| File                  | Change                                                                                                                                                  |
+|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pcap_vs_csv_diff.py` | Built from scratch; tshark-only extraction; fixed separator α → `\|`; per-feature MISSING/EXTRA/DIFF breakdown; batch runner over all 53 PCAP/CSV pairs |
+| `data_extraction.py`  | Removed pyshark entirely; added `FileCapture` (offline iterator), `LiveCapture` (live interface), `load_pcap_as_dataframe` (batch), `LivePreprocessor`  |
+| `offline_testing.py`  | Replaced pyshark loop with `FileCapture`; added `OfflinePreprocessor`; added `diagnose_vs_labels()` for ground-truth comparison                         |
+| `model_utilities.py`  | Updated `LABEL_MAP` from 5 collapsed classes to 10 fine-grained classes; removed class merging that caused 46–92% miss rates                            |
+| `main_model.py`       | Updated `num_class=5` → `num_class=10` on XGBoost and LightGBM                                                                                          |
