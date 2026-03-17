@@ -16,10 +16,11 @@ from collections import defaultdict, deque
 SRC_PATH = pathlib.Path(__file__).parent.parent
 MODEL_PATH = os.path.join(SRC_PATH, "./firewall/model/Blackwall.joblib")
 DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
+SCALER_PATH = os.path.join(SRC_PATH, "./model/output/scaler.joblib")
 
 # Classes that trigger a block action
 TO_BLOCK_IMMEDIATELY = {"HTTP/2-attacks"}
-TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris", "Transport-layer"}
+TO_BLOCK_AFTER_N_INSTANCES = {"DDoS-flooding", "DDoS-loris"}
 DDOS_STRIKES_TO_BLOCK = 100
 DDOS_WINDOW_SECONDS = 60
 
@@ -30,12 +31,20 @@ DDOS_WINDOW_SECONDS = 60
 
 
 class LivePreprocessor:
-    def __init__(self, warmup_packets: int = 500):
-        self.warmup_packets = warmup_packets
-        self.scaler = MinMaxScaler()
-        self.scaler_fitted = False
+    def __init__(self, saved_scaler=None):
         self.ohe_columns: list = []
-        self._warmup_buffer: list = []
+
+        if saved_scaler is not None:
+            self.scaler = saved_scaler["scaler"] if isinstance(saved_scaler, dict) else saved_scaler
+            self.scaler_columns = (saved_scaler["scaler_columns"]
+                                   if isinstance(saved_scaler, dict) else TO_SCALE_COLUMNS)
+            self.scaler_fitted = True
+            print("[Preprocessor] Loaded training scaler.")
+        else:
+            raise RuntimeError(
+                "[Preprocessor] No saved scaler found. "
+                "Run scaling.py to generate scaler.joblib before starting the firewall."
+            )
 
         # checks which columns to oh encode
         df = pd.read_csv(DATASET_PATH, nrows=0)
@@ -80,44 +89,20 @@ class LivePreprocessor:
         return df
 
     def scale(self, df: pd.DataFrame) -> pd.DataFrame:
-        present_scale_cols = [c for c in TO_SCALE_COLUMNS if c in df.columns]
+        # use scaler_columns (exact order from training) not TO_SCALE_COLUMNS
+        # to ensure feature alignment matches what the scaler was fit on
+        present_scale_cols = [c for c in self.scaler_columns if c in df.columns]
         df[present_scale_cols] = df[present_scale_cols].astype(float)
         df[present_scale_cols] = self.scaler.transform(df[present_scale_cols])
         return df
-
-    def fit_scaler(self, batch: pd.DataFrame):
-        present_scale_cols = [c for c in TO_SCALE_COLUMNS if c in batch.columns]
-        batch[present_scale_cols] = batch[present_scale_cols].astype(float)
-        self.scaler.fit(batch[present_scale_cols])
-        self.scaler_fitted = True
 
     def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df = self.fill_missing(df)
         df = self.resolve_compound(df)
         df = self.ohe(df)
-        if self.scaler_fitted:
-            df = self.scale(df)
+        df = self.scale(df)
         return df
-
-    def add_to_warmup(self, df: pd.DataFrame) -> bool:
-        """
-        Buffer a packet for warmup. Returns True once the scaler has been fitted.
-        """
-        if self.scaler_fitted:
-            return True
-        partial = df.copy()
-        partial = self.fill_missing(partial)
-        partial = self.resolve_compound(partial)
-        partial = self.ohe(partial)
-        self._warmup_buffer.append(partial)
-
-        if len(self._warmup_buffer) >= self.warmup_packets:
-            batch = pd.concat(self._warmup_buffer, ignore_index=True).fillna(0)
-            self.fit_scaler(batch)
-            self._warmup_buffer.clear()
-            return True
-        return False
 
 
 def get_interface_ip(interface_name: str) -> str | None:
@@ -141,7 +126,6 @@ class Firewall:
             interface: str = "eth0",
             bpf_filter: str = None,
             block: bool = False,
-            warmup_packets: int = 500,
             batch_size: int = 1,
             keylog_file: str = None,
     ):
@@ -159,11 +143,23 @@ class Firewall:
         self.encoder = checkpoint["encoder"]
         self.label_names: list = list(self.encoder.classes_)
 
-        self.preprocessor = LivePreprocessor(warmup_packets=warmup_packets)
+        # load saved training scaler if available — ensures feature scaling
+        # matches training distribution exactly instead of fitting on warmup
+        saved_scaler = None
+        if os.path.exists(SCALER_PATH):
+            try:
+                # pass the full dict so LivePreprocessor gets both scaler + column list
+                saved_scaler = joblib.load(SCALER_PATH)
+                print(f"[Firewall] Loaded training scaler from {SCALER_PATH}")
+            except Exception as e:
+                print(f"[Firewall] Could not load scaler: {e} — will use warmup instead")
+
+        self.preprocessor = LivePreprocessor(saved_scaler=saved_scaler)
 
         machine_ip = get_interface_ip(interface)
         if machine_ip:
-            bpf = f"dst host {machine_ip} || dst host 127.0.0.1"
+            # capture all inbound traffic to this machine, no port restriction
+            bpf = f"dst host {machine_ip} or dst host 127.0.0.1 or dst host ::1"
             if bpf_filter:
                 bpf = f"({bpf_filter}) and ({bpf})"
         else:
@@ -173,7 +169,6 @@ class Firewall:
         # Stats
         self.stats = {name: 0 for name in self.label_names}
         self.stats["total"] = 0
-        self.stats["warmup"] = 0
         self.start_time = time.time()
 
         # blocked ips
@@ -332,9 +327,7 @@ class Firewall:
     def run(self):
         """Start capturing and classifying. Blocks until KeyboardInterrupt."""
         self.capture.start()
-        print(f"[Preprocessor] Warming up preprocessor on first {self.preprocessor.warmup_packets} packets...")
-
-        last_stats = time.time()
+        print("[Firewall] Classification started — training scaler loaded, no warmup needed.")
 
         try:
             while not self.capture.stop_event.is_set():
@@ -370,22 +363,12 @@ class Firewall:
                     except queue.Empty:
                         break
 
-                # ── Process each packet ────────────────────────────────────
+                # ── Process each packet and run inference ──────────────────
                 for source_ip, raw_df in packets:
                     self.stats["total"] += 1
-
-                    # Warmup phase
-                    if not self.preprocessor.scaler_fitted:
-                        ready = self.preprocessor.add_to_warmup(raw_df)
-                        self.stats["warmup"] += 1
-                        if ready:
-                            print("[Preprocessor] Warmup complete. Classification started!\n")
-                        continue
-
                     batch_ips.append(source_ip)
                     batch_dfs.append(raw_df)
 
-                # ── Run inference on the collected batch ───────────────────
                 if batch_dfs:
                     combined = pd.concat(batch_dfs, ignore_index=True)
                     labels = self.predict(combined)

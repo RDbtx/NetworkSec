@@ -74,7 +74,7 @@ class GUIFirewall(Firewall):
             self.intercept_print_stop()
         blocked_after = len(self.blocked_ips)
 
-        is_attack = label not in {"Normal", "BENIGN"}
+        is_attack = label not in {"Normal"}
         action = "WARNING" if is_attack else "ALLOW"
 
         if is_attack:

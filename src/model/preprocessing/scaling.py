@@ -91,23 +91,31 @@ def one_hot_encode(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def minmax_scale(df: pd.DataFrame) -> pd.DataFrame:
+def minmax_scale(df: pd.DataFrame, scaler_save_path: str = None) -> pd.DataFrame:
     """
     Applies MinMax normalization to all TO_SCALE_COLUMNS, scaling values to the [0, 1] range.
     Moves the Label column back to the last position after scaling.
+    Optionally saves the fitted scaler to disk so it can be reused at inference time.
 
     Input:
     - df: DataFrame containing the numeric columns to scale.
+    - scaler_save_path: if provided, saves the fitted scaler as a joblib file here.
 
     Output:
     - df: DataFrame with TO_SCALE_COLUMNS normalized and Label as last column.
     """
+    import joblib
     print("\nStarting MinMax Scaling...")
     scaler = MinMaxScaler()
     df[TO_SCALE_COLUMNS] = df[TO_SCALE_COLUMNS].astype(float)
     df[TO_SCALE_COLUMNS] = scaler.fit_transform(df[TO_SCALE_COLUMNS])
     df.insert(len(df.columns) - 1, "Label", df.pop("Label"))
     print("Done MinMax scaling!")
+
+    if scaler_save_path:
+        joblib.dump({"scaler": scaler, "scaler_columns": TO_SCALE_COLUMNS}, scaler_save_path)
+        print(f"Scaler saved to {scaler_save_path}")
+
     return df
 
 
@@ -135,7 +143,10 @@ def scaling(csv_dir: str) -> None:
     df = fill_missing_values(df)
     df = resolve_compound_values(df)
     df = one_hot_encode(df)
-    df = minmax_scale(df)
+
+    # save scaler alongside the output CSV so it can be reused at inference time
+    scaler_path = os.path.join(os.path.dirname(csv_dir), "scaler.joblib")
+    df = minmax_scale(df, scaler_save_path=scaler_path)
 
     df.to_csv(output_path, index=False)
     print("Scaling Complete!\n")

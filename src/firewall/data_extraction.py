@@ -6,10 +6,12 @@ import platform
 import os
 from typing import Optional
 from src.model.preprocessing.filtering import FEATURES
+import subprocess
+
 
 # Mapping: feature name → pyshark layer.field path
 FIELD_MAP = {
-    "frame.len": ("frame", "len"),
+    "frame.len": ("frame_info", "len"),  # pyshark exposes frame as packet.frame_info
     "ip.len": ("ip", "len"),
     "tcp.len": ("tcp", "len"),
     "tcp.hdr_len": ("tcp", "hdr_len"),
@@ -57,6 +59,11 @@ FIELD_MAP = {
     "http.content_type": ("http", "content_type"),
 }
 
+KEYLOG_PATH = "/tmp/sslkeys.log"
+if not os.path.exists(KEYLOG_PATH):
+    open(KEYLOG_PATH, "a").close()
+os.environ["SSLKEYLOGFILE"] = KEYLOG_PATH
+
 
 def get_value(packet, layer_name: str, field_name: str):
     """Return the field value from a pyshark packet, or None if absent."""
@@ -67,14 +74,103 @@ def get_value(packet, layer_name: str, field_name: str):
         return None
 
 
+def get_http2_value(packet, field_name: str):
+    """
+    HTTP/2 fields in pyshark are nested inside http2.stream in _all_fields.
+    Some fields (e.g. http2.header.length) are nested further inside lists/dicts.
+    This helper searches the stream dict and one level of sub-dicts/lists.
+    field_name should be dot-notation e.g. 'http2.length', 'http2.header.length'
+    """
+    try:
+        layer = packet.http2
+        # attempt flat pyshark attribute first
+        attr = field_name.replace(".", "_")
+        val = getattr(layer, attr, None)
+        if val is not None:
+            return val
+        # dig into http2.stream dict
+        stream = layer._all_fields.get("http2.stream", {})
+        val = stream.get(field_name)
+        if val is not None:
+            return val
+        # search one level deeper — some fields are inside nested dicts/lists
+        # e.g. http2.header.length is inside the http2.header list items
+        for v in stream.values():
+            if isinstance(v, dict):
+                val = v.get(field_name)
+                if val is not None:
+                    return val
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        val = item.get(field_name)
+                        if val is not None:
+                            return val
+        return None
+    except AttributeError:
+        return None
+
+
+def _search_dict_recursive(d: dict, key: str, max_depth: int = 5):
+    """Recursively search a nested dict/list structure for a key, up to max_depth."""
+    if max_depth == 0:
+        return None
+    if isinstance(d, dict):
+        if key in d:
+            return d[key]
+        for v in d.values():
+            result = _search_dict_recursive(v, key, max_depth - 1)
+            if result is not None:
+                return result
+    elif isinstance(d, list):
+        for item in d:
+            result = _search_dict_recursive(item, key, max_depth - 1)
+            if result is not None:
+                return result
+    return None
+
+
+def get_tls_value(packet, field_name: str):
+    """
+    TLS fields in pyshark are nested inside tls.record (dict or list of dicts)
+    which itself contains tls.handshake and further nested structures.
+    Uses recursive search to find the field at any nesting level.
+    field_name is the pyshark attribute name e.g. 'record_length' which maps
+    to the dot-notation key 'tls.record.length' in _all_fields.
+    """
+    try:
+        layer = packet.tls
+        # try flat pyshark attribute first
+        val = getattr(layer, field_name, None)
+        if val is not None:
+            return val
+        # build dot-notation key from the FEATURES column name
+        # e.g. field_name='record_length' but actual key is 'tls.record.length'
+        # We pass the original feature key from FIELD_MAP so use that directly
+        all_f = layer._all_fields
+        result = _search_dict_recursive(all_f, field_name)
+        return result
+    except AttributeError:
+        return None
+
+
 def extract_features(packet) -> dict:
     """
     Extract all model features from a single pyshark packet.
+    HTTP/2 fields require special nested access via get_http2_value.
     Missing fields are returned as None (handled downstream by the scaler pipeline).
     """
     row = {}
     for feature, (layer, field) in FIELD_MAP.items():
-        row[feature] = get_value(packet, layer, field)
+        if layer == "http2":
+            # feature IS the full dot-notation key e.g. "http2.header.length"
+            row[feature] = get_http2_value(packet, feature)
+        elif layer == "tls":
+            # pass the full feature name (dot-notation) as the search key
+            # e.g. feature="tls.record.length" matches exactly what is in _all_fields
+            row[feature] = get_tls_value(packet, feature)
+        else:
+            row[feature] = get_value(packet, layer, field)
     return row
 
 
@@ -87,6 +183,24 @@ def packet_to_dataframe(packet):
     else:
         source_ip = None
     row = extract_features(packet)
+
+    # DEBUG TLS raw fields
+    if hasattr(packet, 'tls'):
+        with open('/tmp/tls_debug.log', 'a') as f:
+            f.write(f"[TLS ALL_FIELDS] {packet.tls._all_fields}\n")
+
+    # DEBUG — write to file to bypass GUI print interception
+    # remove this block once features are confirmed working
+    with open("/tmp/http2_debug.log", "a") as f:
+        layers = [layer.layer_name for layer in packet.layers]
+        tls_feats = {k: v for k, v in row.items() if k.startswith("tls") and v is not None}
+        http2_feats = {k: v for k, v in row.items() if k.startswith("http2") and v is not None}
+        tcp_feats = {k: v for k, v in row.items() if k.startswith("tcp") and v is not None and v != 0 and v != "0"}
+        f.write(f"[PKT] layers={layers}\n")
+        f.write(f"  tcp={tcp_feats}\n")
+        f.write(f"  tls={tls_feats}\n")
+        f.write(f"  http2={http2_feats}\n")
+
     return source_ip, pd.DataFrame([row], columns=FEATURES)
 
 
@@ -134,13 +248,9 @@ class LiveCapture:
     def resolve_keylog_path(self) -> str:
         if self.keylog_file:
             path = self.keylog_file
-        elif platform.system() == "Windows":
-            path = os.path.join(os.environ.get("USERPROFILE", "C:\\"), "sslkeys.log")
         else:
-            path = "/tmp/sslkeys.log"
+            path = KEYLOG_PATH  # use the module-level constant already set at import time
 
-        # Touch the file so tshark finds it on startup — no directory creation needed
-        # since /tmp always exists on Unix and USERPROFILE always exists on Windows
         if not os.path.exists(path):
             with open(path, "a"):
                 pass
@@ -164,15 +274,54 @@ class LiveCapture:
         # ── TLS key-log setup ──────────────────────────────────────────
         keylog = self.resolve_keylog_path()
 
-        # Tell the OS (and any browser launched after this point) to write keys here.
-        os.environ["SSLKEYLOGFILE"] = keylog
+        # custom_parameters passes -o/-d flags directly to tshark.
+        # override_prefs is unreliable for live captures in many pyshark versions.
+        #
+        # -o tls.keylog_file       → decrypt TLS using the SSLKEYLOGFILE
+        # -d tcp.port==8443,tls    → treat TCP 8443 as TLS (not just port 443)
+        # -d udp.port==4433,quic   → treat UDP 4433 as QUIC (HTTP/3)
+        # -Y http2 or quic         → display filter: only pass fully dissected
+        #                            HTTP/2 or QUIC packets to Python, skipping
+        #                            raw TCP/TLS handshake frames that would just
+        #                            waste warmup budget with all-zero features
+        # ── Preset 1 — FULL MONITORING (default, no port restriction) ─────
+        # Captures all inbound traffic. The -d hints still ensure HTTP/2 and
+        # QUIC are dissected correctly on non-standard ports when they appear.
+        kwargs["custom_parameters"] = [
+            "-o", f"tls.keylog_file:{keylog}",
+            "-d", "tcp.port==8443,tls",
+            "-d", "udp.port==4433,quic",
+            "-d", "tcp.port==8080,http",  # plain HTTP/1.1 server
+        ]
 
-        # Tell tshark/Wireshark dissector where the key file lives so it can
-        # decrypt TLS on-the-fly → HTTP/2 and HTTP/3 frames become visible.
-        kwargs["override_prefs"] = {"tls.keylog_file": keylog}
+        # ── Preset 2 — HTTP/2 LOCAL TEST (uncomment to activate) ──────────
+        # Filters to only fully-decoded HTTP/2 packets destined for the local
+        # server. Use this when testing h2load / slowhttptest attacks so home
+        # wifi noise doesn't pollute the warmup or classification.
+        # Comment out Preset 1 above and uncomment below to switch.
+        #
+        # kwargs["custom_parameters"] = [
+        #     "-o", f"tls.keylog_file:{keylog}",
+        #     "-d", "tcp.port==8443,tls",
+        #     "-d", "udp.port==4433,quic",
+        #     "-Y", "http2 and ip.dst == 127.0.0.1",
+        # ]
+
+        # ── Preset 3 — QUIC/HTTP3 LOCAL TEST (uncomment to activate) ──────
+        # Same as Preset 2 but for QUIC/HTTP3 flood testing on UDP 4433.
+        # Comment out the active preset above and uncomment below to switch.
+        #
+        # kwargs["custom_parameters"] = [
+        #     "-o", f"tls.keylog_file:{keylog}",
+        #     "-d", "tcp.port==8443,tls",
+        #     "-d", "udp.port==4433,quic",
+        #     "-Y", "quic and ip.dst == 127.0.0.1",
+        # ]
+        kwargs["tshark_path"] = subprocess.run(
+            ["which", "tshark"], capture_output=True, text=True
+        ).stdout.strip()  # auto-detect tshark path instead of hardcoding /usr/bin/tshark
 
         print(f"[LiveCapture] TLS key-log: {keylog}")
-
         capture = pyshark.LiveCapture(**kwargs)
         try:
             for packet in capture.sniff_continuously():

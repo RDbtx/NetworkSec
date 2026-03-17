@@ -70,14 +70,14 @@ if __name__ == "__main__":
     print(f"y_test shape:  {y_test.shape}")
 
     # Train, Test and Save Model
-    lightboost_trained_model, lightboost_train_predictions = model_train(lgbm_multi, labels_names, x_train, y_train,"LGB_Blackwall")
-    # boost_trained_model, boost_train_predictions = model_train(xgboost_model, labels_names, x_train, y_train,"XGB_Blackwall")
-    random_trained_model, random_train_predictions = model_train(random_forest, labels_names, x_train, y_train,"RF_Blackwall")
+    # lightboost_trained_model, lightboost_train_predictions = model_train(lgbm_multi, labels_names, x_train, y_train,"LGB_Blackwall")
+    boost_trained_model, boost_train_predictions = model_train(xgboost_model, labels_names, x_train, y_train, "XGB_Blackwall")
+    # random_trained_model, random_train_predictions = model_train(random_forest, labels_names, x_train, y_train,"RF_Blackwall")
 
-    lightboost_test_predictions = model_test(lightboost_trained_model, labels_names, x_test, y_test, "LGB_Blackwall")
-    # boost_test_predictions = model_test(boost_trained_model, labels_names, x_test, y_test, "XGB_Blackwall")
-    random_test_predictions = model_test(random_trained_model, labels_names, x_test, y_test, "RF_Blackwall")
+    # lightboost_test_predictions = model_test(lightboost_trained_model, labels_names, x_test, y_test, "LGB_Blackwall")
+    boost_test_predictions = model_test(boost_trained_model, labels_names, x_test, y_test, "XGB_Blackwall")
+    # random_test_predictions = model_test(random_trained_model, labels_names, x_test, y_test, "RF_Blackwall")
 
-    save_model(lightboost_trained_model, encoder, "LGB_Blackwall")
-    # save_model(boost_trained_model, encoder, "XGB_Blackwall")
-    save_model(random_trained_model, encoder, "RF_Blackwall")
+    # save_model(lightboost_trained_model, encoder, "LGB_Blackwall")
+    save_model(boost_trained_model, encoder, "XGB_Blackwall")
+    # save_model(random_trained_model, encoder, "RF_Blackwall")
