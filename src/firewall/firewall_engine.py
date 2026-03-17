@@ -158,13 +158,16 @@ class Firewall:
 
         machine_ip = get_interface_ip(interface)
         if machine_ip:
-            # capture all inbound traffic to this machine, no port restriction
             bpf = f"dst host {machine_ip} or dst host 127.0.0.1 or dst host ::1"
             if bpf_filter:
                 bpf = f"({bpf_filter}) and ({bpf})"
         else:
             bpf = bpf_filter
-        self.capture = LiveCapture(interface=interface, bpf_filter=bpf)
+        self.capture = LiveCapture(
+            interface=interface,
+            bpf_filter=bpf_filter,
+            keylog_file=keylog_file,
+        )
 
         # Stats
         self.stats = {name: 0 for name in self.label_names}

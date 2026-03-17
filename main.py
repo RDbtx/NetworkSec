@@ -139,6 +139,8 @@ class AppController:
 
     # ── firewall thread target ────────────────────────────────────────────────
 
+    # main.py
+
     def run_firewall(self, bus: GUIEventBus, iface: str):
         try:
             fw = GUIFirewall(
@@ -148,6 +150,7 @@ class AppController:
                 bpf_filter=None,
                 block=False,
                 batch_size=8,
+                keylog_file="/Users/riccardo/Desktop/NetworkSec/src/model/dataset/ssl keys/all.txt",
             )
             self.fw_ref[0] = fw
             fw.run()
