@@ -296,7 +296,9 @@ def http_pause_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
 # =====================================
 
 def labeling(dataset_dir : str):
-    print("\n####### Labeling #######")
+    print("\n" + "=" * 30)
+    print("\t LABELING PROCESS")
+    print("" + "=" * 30)
     print("Labeling dataset data...")
 
     # Att1

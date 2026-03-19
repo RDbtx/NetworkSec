@@ -13,8 +13,8 @@ from src.firewall.data_extraction import LiveCapture
 from collections import defaultdict, deque
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
-MODEL_PATH = os.path.join(SRC_PATH, "./firewall/model/Blackwall.joblib")
-SCALER_PATH = os.path.join(SRC_PATH, "./model/output/scaler.joblib")
+MODEL_PATH = os.path.join(SRC_PATH, "firewall/model/Blackwall.joblib")
+SCALER_PATH = os.path.join(SRC_PATH, "model/output/scaler.joblib")
 
 # Classes that trigger a block action
 TO_BLOCK_IMMEDIATELY = {"HTTP/2-attacks"}
@@ -364,3 +364,16 @@ class Firewall:
         except KeyboardInterrupt:
             print("\n[Firewall] Shutting down...")
             self.capture.stop()
+
+
+if __name__ == "__main__":
+    fire = Firewall(
+        model_path=MODEL_PATH,
+        interface="eth0",
+        bpf_filter=None,
+        block=False,
+        batch_size=8,
+        keylog_file=None,
+    )
+
+    fire.run()

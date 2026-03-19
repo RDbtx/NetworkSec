@@ -147,7 +147,10 @@ def scaling(csv_dir: str) -> None:
     - csv_dir: Path to the merged input CSV file (pcap-all.csv).
 
     """
-    print("\n####### Scaling #######")
+    print("\n" + "=" * 30)
+    print("\t SCALING PROCESS")
+    print("" + "=" * 30)
+    print("Scaling dataset data...")
     output_path = os.path.join(os.path.dirname(csv_dir), "pcap-all-final.csv")
     print("Reading:", csv_dir)
     df = pd.read_csv(csv_dir, sep=",", on_bad_lines='skip', encoding="ISO-8859-1", low_memory=False)

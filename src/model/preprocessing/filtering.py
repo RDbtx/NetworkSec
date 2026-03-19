@@ -73,7 +73,10 @@ def save_merged_csv(data: pd.DataFrame, output_dir : str) -> str:
 # =====================================
 
 def filtering(dataset_dir: str) -> str:
-    print("\n####### Filtering #######")
+    print("\n" + "=" * 30)
+    print("\t FILTERING PROCESS")
+    print("" + "=" * 30)
+    print("Filtering dataset data...")
 
     print("Looking for CSV files in:", dataset_dir)
     csv_files = glob.glob(os.path.join(dataset_dir, "**", "*-l.csv"),
