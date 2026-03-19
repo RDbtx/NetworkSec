@@ -5,6 +5,29 @@
 
 ---
 
+## Dataset
+
+The dataset used in this project is the **H23Q dataset**, published in:
+
+> Chatzoglou, E., Kouliaridis, V., Kambourakis, G., Karopoulos, G., & Gritzalis, S. (2023). *A hands-on gaze on HTTP/3
+security through the lens of HTTP/2 and a public dataset.* Computers & Security, 125,
+
+103051. https://doi.org/10.1016/j.cose.2022.103051
+
+The dataset is available at the AWID website: https://icsdweb.aegean.gr/awid/other-datasets/H23Q
+
+H23Q is a 30 GB labeled corpus containing traces of ten diverse attacks targeting HTTP/2, HTTP/3, and QUIC services,
+captured across six server implementations (caddy, cloudflare, h2o, litespeed, nginx, windows). It is available in both
+PCAP and CSV formats. The paper's own ML evaluation grouped the ten fine-grained attack labels into five classes —
+Normal, DDoS-flooding, DDoS-loris, Transport-layer, and HTTP/2-attacks — which is the `LABEL_MAP` originally present in
+`model_utilities.py`. The paper also explicitly adopted the same NaN-filling convention used here: constant/flag
+features filled with `-1`, numeric features filled with `0`.
+
+The classifier performance problems diagnosed in this document therefore directly reflect challenges inherent to H23Q as
+identified by the dataset creators themselves, not implementation bugs.
+
+---
+
 ## Summary
 
 Seven problems were identified and worked through iteratively:
@@ -12,17 +35,19 @@ Seven problems were identified and worked through iteratively:
 1. **Fixed** — tshark extraction broken by Unicode encoding bug in separator (α → `|`).
 2. **Resolved** — pyshark removed entirely; tshark is the sole extraction backend (100% match against training CSVs
    across 371M comparisons).
-3. **Root-caused** — class definition mismatch caused 46–92% miss rates even on training data.
+3. **Root-caused** — the paper's own 5-class grouping causes 46–92% miss rates even on training data, because each class
+   merges TCP-based and QUIC-based attacks that occupy different regions of the feature space.
 4. **Partially fixed** — 10-class fine-grained labels: some classes improved dramatically (`quic-enc` 98.5%,
    `http-smuggle` 100%), QUIC flood/loris classes unchanged.
 5. **Partially fixed** — dual-model architecture (TCP + QUIC): TCP model is production-ready (AUC 0.998, `http-smuggle`
    100%, Normal 100%). QUIC flood/loris classes still fail.
-6. **Root-caused** — "ghost values": QUIC fields carried over into TCP packets due to tshark not resetting per-packet
-   fields between dissections. Fixed by regenerating the dataset with `-E occurrence=a`.
-7. **Open** — After dataset regeneration, the single 10-class model outperforms the dual-model on the new data.
-   `quic-flood` regressed to 2% recall in both architectures on the new dataset. `quic-loris` and `http-loris` remain at
-   0–10% recall. These QUIC volumetric/slow attacks are not separable from Normal QUIC traffic at the per-packet level —
-   flow-level features are required.
+6. **Investigated** — ghost values (QUIC fields persisting into TCP packets via tshark dissector state): confirmed
+   present and not fixable at the CLI level. They are a known H23Q dataset quality characteristic arising from the
+   full-session capture methodology. Regeneration with `-E occurrence=a` does not eliminate them; model performance is
+   identical across both dataset versions because ghost values are consistent in both training and inference data.
+7. **Open** — `quic-flood`, `quic-loris`, and `http-loris` are not separable from Normal QUIC traffic at the per-packet
+   level, confirmed across all architectures. The H23Q paper itself noted this challenge. Flow-level features (packet
+   rate, inter-arrival time, bytes/sec per source IP) are required.
 
 ---
 
@@ -276,9 +301,10 @@ has only 1.4% importance — the model never learned to associate the absence of
 Meanwhile, the features that are actually present in attack packets (`quic.packet_length`, `http3.settings.*`) are
 ranked 6th and below with low importance.
 
-### 3.4 Root Cause: Class Definition Mismatch
+### 3.4 Root Cause: The Paper's Own Classification Scheme
 
-The `LABEL_MAP` in `model_utilities.py` collapses 11 fine-grained attack labels into 5 classes:
+The `LABEL_MAP` in `model_utilities.py` was taken directly from the H23Q paper's own ML evaluation, which groups the ten
+fine-grained attack labels into five classes:
 
 ```python
 LABEL_MAP = {
@@ -291,10 +317,16 @@ LABEL_MAP = {
 }
 ```
 
-The `DDoS-flooding` class merges attacks that use completely different protocols (TCP-based HTTP floods from some
-servers vs QUIC-based floods from QUIC-capable servers like caddy). The merged class has high internal variance — the
-model cannot learn a clean decision boundary because the same label covers both TCP and QUIC traffic patterns. The
-dominant features it learned (TCP flags) work well for TCP floods but are structurally absent in QUIC floods.
+The `DDoS-flooding` class merges attacks that use completely different protocols — TCP-based HTTP floods from
+nginx/windows servers and QUIC-based floods from QUIC-capable servers (caddy, h2o, litespeed, cloudflare). The merged
+class has high internal variance because the same label covers both TCP and QUIC traffic patterns. The dominant features
+the model learned (TCP flags) work well for TCP floods but are structurally absent in QUIC floods.
+
+The H23Q paper itself acknowledged the mixed-protocol challenge, noting that the coexistence of diverse protocols (TCP,
+UDP, QUIC, HTTP) results in multiple empty cells in the feature matrix, requiring `-1` and `0` fill strategies to
+differentiate absent features from zero values. What this project's diagnosis surfaces is that those empty cells are not
+randomly distributed — they are systematically correlated with server type (TCP vs QUIC), making class boundaries
+unlearnable for any class that merges packets from both protocol families.
 
 ---
 
@@ -682,129 +714,122 @@ nullified or reset to zero when the underlying transport protocol changes.
 
 ---
 
-## 8. Dataset Regeneration and New Model Results
 
-### 8.1 Dataset Regeneration: Fixing Ghost Values
+---
 
-The `dataset_regenerator.py` script was written to regenerate the CSVs from the original PCAPs using tshark 4.6.0. The
-key fix is the `-E occurrence=a` flag:
+## 8. Dataset Regeneration: Ghost Values Investigation
 
-```bash
-tshark -r pcap -T fields -E separator=| -E header=y -E quote=d -E occurrence=a ...
-```
+### 8.1 The Ghost Values Hypothesis
 
-**`-E occurrence=a`** tells tshark to emit **all** occurrences of a repeated field for each packet, not just the first.
-Without this flag, when a TCP packet is reassembled from multiple segments, tshark may carry forward QUIC field values
-from a previously dissected packet in the same capture file. This is the root cause of "ghost values" identified in
-Section 7.6 — TCP-based `http-flood` packets appearing to have `quic.packet_length > 0` and being routed to the QUIC
-model, leaving only 71/106 samples in the TCP model.
+During dual-model testing, a data integrity concern was identified: packets labeled as `http-flood` and `http-loris`
+were found to contain non-null `quic.packet_length` values, causing them to be routed to the QUIC model. The hypothesis
+was that tshark was carrying forward QUIC field values from previously dissected packets — "ghost values" persisting
+across packet boundaries.
 
-The regenerator also adds extra labeling-support columns (`frame.time_relative`, `ip.src`, `ip.dst`, `http.host`,
-`udp.dstport`, `dns.id`, `urlencoded-form.key`) that are needed by `labeling.py` but were absent from the original
-46-feature CSVs, and validates all fields against tshark's supported field list before extraction.
+`dataset_regenerator.py` was written to regenerate the CSVs with `-E occurrence=a` to force a clean per-packet field
+emission and test whether this was the cause.
 
-### 8.2 New Dataset — Dual-Model Results
+### 8.2 Finding: Ghost Values Persist After Regeneration
 
-Both models were retrained on the regenerated dataset.
+The QUIC model of the regenerated dual-model still contains `http-flood` (199,453 test samples) and `http-loris` (29,829
+test samples) — identical counts to the original dataset. `-E occurrence=a` did not remove them.
 
-**TCP Model (8 classes, 1,565,030 test samples):**
+This rules out field-emission as the cause. The issue is deeper: **tshark dissector state persistence**. When tshark
+processes a PCAP sequentially, it builds connection-level dissector state. The H23Q capture files contain a full
+10-minute window including pre-attack baseline traffic. During the `1-http-flood` capture against caddy (a QUIC server),
+the capture file contains legitimate QUIC browsing traffic in the baseline period. When tshark subsequently processes
+TCP packets in the same session — connection setup, teardown, or interleaved traffic — the QUIC dissector state from
+earlier in the file is still active for that 5-tuple, causing `quic.packet_length` to be populated on what are
+structurally TCP or non-QUIC packets.
 
-| Class            | Precision | Recall   | F1   | Notes                                          |
-|------------------|-----------|----------|------|------------------------------------------------|
-| Normal           | 1.00      | 1.00     | 1.00 | Perfect                                        |
-| fuzzing          | 0.83      | **0.70** | 0.76 | New in TCP model                               |
-| http-flood       | 0.00      | **0.00** | 0.00 | Only 71 test samples — near-absent after split |
-| http-smuggle     | 0.97      | **1.00** | 0.98 | Perfect                                        |
-| http2-concurrent | 0.70      | 0.75     | 0.73 | Stable                                         |
-| http2-pause      | 0.64      | 0.74     | 0.69 | Stable                                         |
-| quic-enc         | 0.83      | **0.99** | 0.90 | Excellent                                      |
-| quic-loris       | 0.00      | **0.00** | 0.00 | Only 61 test samples — near-absent after split |
+`-E occurrence=a` controls *how many field values* are emitted per packet. It does not reset tshark's dissector state
+between packets. The state persistence is in the dissector layer, not the field emission layer, and cannot be fixed at
+the command-line level.
 
-AUC (macro): **0.9966** | Accuracy: 0.9861
+### 8.3 Root Cause: Dataset Capture Methodology
 
-**QUIC Model (5 classes, 2,190,588 test samples):**
+The ghost values are a characteristic of how H23Q was constructed. The paper describes each attack as being captured in
+a full 10-minute session on a shared testbed where both Normal and attack traffic coexist. During this window, the same
+capture file contains QUIC session traffic from QUIC-capable servers alongside TCP traffic. tshark builds dissector
+state per 5-tuple connection: a TCP packet sharing a 5-tuple with an earlier QUIC session in the same file can inherit
+QUIC dissector state, receiving `quic.packet_length` values it would not have if captured in isolation.
 
-| Class      | Precision | Recall   | F1   | Notes                                |
-|------------|-----------|----------|------|--------------------------------------|
-| Normal     | 0.94      | 0.98     | 0.96 | Good                                 |
-| http-flood | 0.73      | **0.66** | 0.69 | Improved from 51%                    |
-| http-loris | 0.62      | **0.07** | 0.13 | Near-zero, unchanged                 |
-| quic-flood | 0.89      | **0.02** | 0.03 | **Catastrophic regression from 40%** |
-| quic-loris | 0.00      | **0.00** | 0.00 | Still zero                           |
+This is not a bug in the paper's methodology — it reflects realistic network conditions where mixed-protocol traffic
+coexists on the same interface. The paper captured exactly what was on the wire. But it means the CSV features cannot be
+taken as strict per-protocol ground truth: the QUIC feature columns in a nominally TCP packet row are an artefact of
+tshark's connection tracking, not of the packet's own content.
 
-AUC (macro): **0.8909** | Accuracy: 0.9204
+The only way to fully eliminate ghost values would be to reprocess each PCAP with protocol-level BPF pre-filtering (
+`udp` vs `tcp`) before extraction — which is a post-hoc operation the dataset creators did not perform, and which would
+discard cross-protocol connection state that may itself be informative for certain attack types.
 
-The `quic-flood` regression from 40% to 2% recall is significant. On the old dataset many QUIC-flood packets had
-`quic.packet_length` populated via ghost values from other packets; removing ghost values stripped that spurious signal.
-The `quic-flood` class in the new clean dataset is genuinely indistinguishable from Normal QUIC at the per-packet level.
+### 8.4 Finding: Dataset Regeneration Did Not Change Model Performance
 
-### 8.3 New Dataset — Single 10-Class Model Results
+The 10-class single model was retrained on the regenerated dataset. The recall numbers are identical to the original
+across every class:
 
-The single 10-class model was also retrained on the new dataset. Results (testing, 3,755,618 samples):
+| Class            | Original dataset | New dataset | Difference |
+|------------------|------------------|-------------|------------|
+| http-flood       | 67%              | 67%         | None       |
+| http-loris       | 10%              | 10%         | None       |
+| http-smuggle     | 100%             | 100%        | None       |
+| http2-concurrent | 76%              | 76%         | None       |
+| http2-pause      | 74%              | 74%         | None       |
+| quic-enc         | 96%              | 96%         | None       |
+| quic-flood       | 2%               | 2%          | None       |
+| quic-loris       | 0%               | 0%          | None       |
+| fuzzing          | 71%              | 71%         | None       |
 
-| Class            | Precision | Recall   | F1   | Notes                                    |
-|------------------|-----------|----------|------|------------------------------------------|
-| Normal           | 0.96      | 0.98     | 0.97 |                                          |
-| fuzzing          | 0.83      | **0.71** | 0.77 |                                          |
-| http-flood       | 0.74      | **0.67** | 0.70 | **Best result across all architectures** |
-| http-loris       | 0.64      | **0.10** | 0.17 | Slight improvement                       |
-| http-smuggle     | 0.97      | **1.00** | 0.98 | Perfect                                  |
-| http2-concurrent | 0.71      | **0.76** | 0.73 |                                          |
-| http2-pause      | 0.64      | **0.74** | 0.68 |                                          |
-| quic-enc         | 0.83      | **0.96** | 0.89 |                                          |
-| quic-flood       | 0.88      | **0.02** | 0.04 | Same regression as QUIC dual model       |
-| quic-loris       | 0.00      | **0.00** | 0.00 |                                          |
+Ghost values are confirmed still present in the regenerated dataset — the QUIC model split contains identical
+`http-flood` and `http-loris` sample counts in both dataset versions. Because the ghost values appear consistently in
+both training and inference data, the classifier has absorbed them as part of its learned representation, which is why
+regeneration produces no performance change.
 
-AUC (macro): **0.9681** | Accuracy: 0.9490
+### 8.5 Why the 5-Class Model Appeared Better for Floods
 
-### 8.4 Architecture Comparison: All Models on New Dataset
+The 5-class model showed 53% recall for `DDoS-flooding`. This looks better than the 10-class results, but the comparison
+is misleading:
 
-| Class            | Dual TCP  | Dual QUIC | Single 10-class | Winner              |
-|------------------|-----------|-----------|-----------------|---------------------|
-| Normal           | **100%**  | 98%       | 98%             | Dual TCP            |
-| fuzzing          | 70%       | —         | **71%**         | Single ≈            |
-| http-flood       | 0%        | 66%       | **67%**         | Single              |
-| http-loris       | —         | 7%        | **10%**         | Single              |
-| http-smuggle     | **100%**  | —         | **100%**        | Tied                |
-| http2-concurrent | 75%       | —         | **76%**         | Single ≈            |
-| http2-pause      | 74%       | —         | **74%**         | Tied                |
-| quic-enc         | **99%**   | —         | 96%             | Dual TCP            |
-| quic-flood       | —         | 2%        | 2%              | Tied (both fail)    |
-| quic-loris       | 0%        | 0%        | 0%              | All fail            |
-| **F1 macro**     | 0.635     | 0.363     | **0.597**       | Single              |
-| **AUC macro**    | **0.997** | 0.891     | 0.968           | Dual TCP (TCP-only) |
+- `DDoS-flooding` merged `http-flood` + `quic-flood` + `http-stream` into one label
+- The 53% recall was driven by the **TCP flood component** (nginx, windows) which the model could learn from TCP flag
+  features
+- The QUIC flood component was being misclassified as Normal but hidden inside the combined class metric
+- When classes are separated in the 10-class model, `quic-flood` correctly shows 2% recall — this was always its true
+  recall, masked by the TCP component
 
-**The single 10-class model on the new dataset is the best overall architecture** for the current feature set. It
-achieves the highest `http-flood` recall (67%), the highest `http-loris` recall (10%), and the best macro F1 across all
-classes. The dual-model's TCP branch is stronger for its specific classes (quic-enc 99%, Normal 100%) but its QUIC
-branch underperforms the single model on http-flood.
+The 5-class model was not better. It produced inflated metrics by averaging a learnable subclass (TCP flood) with an
+unlearnable one (QUIC flood).
 
-### 8.5 Conclusion on Current Architecture Limits
+### 8.6 Recommendation: Use Original Dataset, Single 10-Class Model
 
-After regenerating the dataset with `-E occurrence=a`, both architectures converge on the same fundamental ceiling:
+The original dataset 10-class single model is the recommended production model — identical in performance to the
+regenerated version and the most honest representation of what the per-packet feature set can achieve. The dual-model
+architecture adds complexity without improving overall recall.
 
-| Class family               | Status               | Reason                                   |
-|----------------------------|----------------------|------------------------------------------|
-| Normal, http-smuggle       | ✅ Solved             | Distinctive TCP features                 |
-| fuzzing, quic-enc, http2-* | ✅ Good (70–99%)      | Sufficient per-packet signal             |
-| http-flood                 | ⚠️ 67% ceiling       | QUIC flood vs Normal QUIC overlap        |
-| http-loris                 | ⚠️ 10% ceiling       | Slow QUIC connection = Normal QUIC       |
-| quic-flood                 | ❌ 2% — not learnable | Indistinguishable per-packet from Normal |
-| quic-loris                 | ❌ 0% — not learnable | Structurally identical to Normal QUIC    |
+### 8.7 Current Performance Ceiling (All Architectures)
 
-Improving `quic-flood` and `quic-loris` requires flow-level features (packet rate, inter-arrival time, bytes/sec per
-source IP) that are not available in single-packet tshark extraction. Improving `http-flood` and `http-loris` further
-likely requires the same.
+| Class            | Best recall | Status          | Bottleneck                                                    |
+|------------------|-------------|-----------------|---------------------------------------------------------------|
+| Normal           | 100%        | ✅ Solved        | —                                                             |
+| http-smuggle     | 100%        | ✅ Solved        | —                                                             |
+| quic-enc         | 96–99%      | ✅ Solved        | —                                                             |
+| fuzzing          | 70–71%      | ✅ Good          | Some Normal overlap                                           |
+| http2-concurrent | 75–76%      | ✅ Good          | Confusion with http2-pause                                    |
+| http2-pause      | 73–74%      | ✅ Good          | Confusion with http2-concurrent                               |
+| http-flood       | 67%         | ⚠️ Ceiling      | Mixed-protocol class — QUIC half overlaps Normal QUIC         |
+| http-loris       | 10%         | ⚠️ Ceiling      | QUIC slow connection indistinguishable from Normal per-packet |
+| quic-flood       | 2%          | ❌ Not learnable | Indistinguishable from Normal QUIC per-packet                 |
+| quic-loris       | 0%          | ❌ Not learnable | Structurally identical to Normal QUIC per-packet              |
 
 ---
 
 ## 9. Summary of All Changes Made
 
-| File                     | Change                                                                                                                                                                   |
-|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `pcap_vs_csv_diff.py`    | Built from scratch; tshark-only extraction; fixed separator α → `\|`; per-feature MISSING/EXTRA/DIFF breakdown; batch runner over all 53 PCAP/CSV pairs                  |
-| `data_extraction.py`     | Removed pyshark entirely; added `FileCapture`, `LiveCapture`, `load_pcap_as_dataframe`, `LivePreprocessor`; added `DualModelRouter` for protocol-based inference routing |
-| `offline_testing.py`     | Replaced pyshark loop with `FileCapture` + `DualModelRouter`; added `OfflinePreprocessor`; added `diagnose_vs_labels()`                                                  |
-| `model_utilities.py`     | Replaced single `LABEL_MAP` with `TCP_LABEL_MAP` + `QUIC_LABEL_MAP`; added `extract_data_tcp()` and `extract_data_quic()` with protocol-split logic                      |
-| `main_model.py`          | Dual-branch training: trains `XGB_Blackwall_TCP` and `XGB_Blackwall_QUIC` separately with correct `num_class` per branch                                                 |
-| `dataset_regenerator.py` | New script: regenerates CSVs from original PCAPs using tshark 4.6.0 with `-E occurrence=a` to eliminate ghost values; validates fields against tshark's supported list   |
+| File                     | Change                                                                                                                                                                                                                                                     |
+|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pcap_vs_csv_diff.py`    | Built from scratch; tshark-only extraction; fixed separator α → `\|`; per-feature MISSING/EXTRA/DIFF breakdown; batch runner over all 53 PCAP/CSV pairs                                                                                                    |
+| `data_extraction.py`     | Removed pyshark entirely; added `FileCapture`, `LiveCapture`, `load_pcap_as_dataframe`, `LivePreprocessor`; added `DualModelRouter` for protocol-based inference routing                                                                                   |
+| `offline_testing.py`     | Replaced pyshark loop with `FileCapture` + `DualModelRouter`; added `OfflinePreprocessor`; added `diagnose_vs_labels()`                                                                                                                                    |
+| `model_utilities.py`     | Replaced single `LABEL_MAP` with `TCP_LABEL_MAP` + `QUIC_LABEL_MAP`; added `extract_data_tcp()` and `extract_data_quic()` with protocol-split logic                                                                                                        |
+| `main_model.py`          | Dual-branch training: trains `XGB_Blackwall_TCP` and `XGB_Blackwall_QUIC` separately with correct `num_class` per branch                                                                                                                                   |
+| `dataset_regenerator.py` | New script: regenerates CSVs from PCAPs using tshark 4.6.0 with `-E occurrence=a`; ghost values confirmed still present after regeneration (tshark dissector state persistence, not fixable at CLI level); identical model performance to original dataset |

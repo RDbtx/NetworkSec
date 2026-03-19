@@ -97,6 +97,14 @@ def minmax_scale(df: pd.DataFrame, scaler_save_path: str = None) -> pd.DataFrame
     Moves the Label column back to the last position after scaling.
     Optionally saves the fitted scaler to disk so it can be reused at inference time.
 
+    The saved joblib file contains three keys:
+      - "scaler"        : the fitted MinMaxScaler instance
+      - "scaler_columns": the ordered list of numeric columns the scaler was fit on
+      - "ohe_columns"   : the full ordered post-OHE column list (excluding Label),
+                          used by the firewall preprocessor to reindex live packets
+                          to the exact feature space the model expects — eliminates
+                          the need to ship the training CSV to the deployment machine
+
     Input:
     - df: DataFrame containing the numeric columns to scale.
     - scaler_save_path: if provided, saves the fitted scaler as a joblib file here.
@@ -113,8 +121,14 @@ def minmax_scale(df: pd.DataFrame, scaler_save_path: str = None) -> pd.DataFrame
     print("Done MinMax scaling!")
 
     if scaler_save_path:
-        joblib.dump({"scaler": scaler, "scaler_columns": TO_SCALE_COLUMNS}, scaler_save_path)
-        print(f"Scaler saved to {scaler_save_path}")
+        ohe_columns = [c for c in df.columns if c != "Label"]
+        joblib.dump({
+            "scaler": scaler,
+            "scaler_columns": TO_SCALE_COLUMNS,
+            "ohe_columns": ohe_columns,
+        }, scaler_save_path)
+        print(f"Scaler saved to {scaler_save_path} "
+              f"({len(ohe_columns)} OHE columns included)")
 
     return df
 

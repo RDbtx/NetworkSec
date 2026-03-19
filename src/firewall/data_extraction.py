@@ -1,39 +1,33 @@
 """
 data_extraction.py
 ==================
-Live traffic capture, feature extraction, and classification using tshark.
-No pyshark — tshark is invoked as a subprocess on the network interface,
-its stdout is read line-by-line, and each row is parsed, preprocessed,
-classified by the DualModelRouter, and pushed to a queue.
+Live network traffic capture and feature extraction for the Blackwall firewall.
 
-Architecture
-------------
-  LiveCapture.start()
-      └─ background thread runs _capture_loop()
-             └─ spawns:  tshark -i <iface> -T fields -E separator=| ...
-             └─ reads stdout line by line
-             └─ for each row: parse → preprocess → route → queue.put()
+Captures packets from a live interface using tshark and places each packet
+on a queue as a (source_ip, raw_df) tuple for firewall_engine.py to consume.
+Preprocessing (fill_missing → resolve_compound → OHE → MinMax scale) is
+handled by LivePreprocessor inside firewall_engine.py.
 
-  Consumer (firewall):
-      source_ip, label = capture.queue.get()
-      # label is a string e.g. "Normal", "http-flood", "quic-loris"
+Extraction method mirrors dataset_regenerator.py exactly:
+  - separator  : "|"   (ASCII pipe — safe on all platforms)
+  - occurrence : "a"   (emit ALL occurrences of repeated fields per packet)
+  - quote      : "d"   (double-quote wrapping, stripped in post-processing)
+  - fields     : validated against `tshark -G fields` before each run
 
-Dual-model routing
-------------------
-  quic.packet_length > 0  →  QUIC model
-  quic.packet_length == 0 →  TCP model
+Post-processing (three ordered steps — order is mandatory):
+  1. "," → "+"    multi-value commas inside fields → summable strings
+  2. strip "      remove -E quote=d wrapping
+  3. "|" → ","    pipe separator → standard CSV comma  (MUST be last)
 
-  This mirrors the training-time protocol split and ensures each packet
-  is classified only by the model trained on its protocol family.
+Queue contract (consumed by firewall_engine.py):
+    source_ip, raw_df = capture.queue.get(timeout=0.5)
 
-TLS decryption
---------------
-  Pass keylog_file pointing to an NSS SSLKEYLOGFILE (all.txt equivalent).
-  tshark will decrypt TLS on-the-fly, exposing HTTP/2, HTTP/3, and QUIC
-  application-layer fields — identical to how the training data was captured.
+    source_ip : str | None   — ip.src or ipv6.src value from the packet
+    raw_df    : pd.DataFrame — single-row DataFrame with the 46 FEATURES
+                               columns, raw unpreprocessed string values.
+                               Fed into LivePreprocessor.preprocess() in
+                               firewall_engine.py before model inference.
 """
-
-from __future__ import annotations
 
 import os
 import platform
@@ -42,37 +36,49 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
-
-import joblib
+from typing import Any, Optional
 import pandas as pd
 
-from src.model.preprocessing.filtering import FEATURES
-from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
+# ── 46 model features (no Label) ─────────────────────────────────────────────
+FEATURES = [
+    "frame.len", "ip.len", "tcp.len", "tcp.hdr_len", "tcp.flags.ack",
+    "tcp.flags.push", "tcp.flags.reset", "tcp.flags.syn", "tcp.flags.fin",
+    "tcp.window_size_value", "tcp.option_len", "udp.length", "tls.record.length",
+    "tls.reassembled.length", "tls.handshake.length", "tls.handshake.certificates_length",
+    "tls.handshake.certificate_length", "tls.handshake.session_id_length",
+    "tls.handshake.cipher_suites_length", "tls.handshake.extensions_length",
+    "tls.handshake.client_cert_vrfy.sig_len", "quic.packet_length", "quic.long.packet_type",
+    "quic.packet_number_length", "quic.length", "quic.nci.connection_id.length",
+    "quic.crypto.length", "quic.fixed_bit", "quic.spin_bit", "quic.stream.fin",
+    "quic.stream.len", "quic.token_length", "quic.padding_length", "http2.length",
+    "http2.header.length", "http2.header.name.length", "http2.header.value.length",
+    "http2.headers.content_length", "http3.frame_length",
+    "http3.settings.qpack.max_table_capacity", "http3.settings.max_field_section_size",
+    "dns.flags.response", "dns.count.queries", "dns.count.answers",
+    "http.content_length", "http.content_type",
+]
 
-# ── model features (no Label) ─────────────────────────────────────────────────
-MODEL_FEATURES: list[str] = [f for f in FEATURES if f != "Label"]
-
-# ── separator — ASCII pipe, never appears in any network field value ──────────
+# ── tshark settings ───────────────────────────────────────────────────────────
 _SEP = "|"
-
-# ── default keylog path ───────────────────────────────────────────────────────
 _DEFAULT_KEYLOG = "/tmp/sslkeys.log"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#   tshark utilities
+#   tshark helpers  (identical to dataset_regenerator.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def find_tshark() -> str:
-    """Auto-detect tshark binary. Raises FileNotFoundError if not found."""
+def _find_tshark() -> str:
+    """
+    Auto-detect the tshark binary. Checks the TSHARK environment variable
+    first, then PATH, then common install locations.
+    """
     env = os.environ.get("TSHARK")
     if env:
         return env
     cmd = "where" if sys.platform == "win32" else "which"
     try:
-        result = subprocess.run([cmd, "tshark"], capture_output=True, text=True)
-        found = result.stdout.strip().splitlines()
+        r = subprocess.run([cmd, "tshark"], capture_output=True, text=True)
+        found = r.stdout.strip().splitlines()
         if found:
             return found[0]
     except FileNotFoundError:
@@ -86,466 +92,79 @@ def find_tshark() -> str:
     )
 
 
-def postprocess_row(raw_line: str) -> str:
+def _get_supported_fields(tshark: str) -> set[str]:
     """
-    Apply the UltraEdit post-processing steps from the dataset README:
-      1. "," → "+"   multi-value field commas become summable arithmetic strings
-      2. strip "     remove -E quote=d wrapping
-      3. "|" → ","   our column separator becomes a standard CSV comma
-    Order is mandatory: step 3 must be last.
+    Query tshark for its full field registry and return the set of supported
+    field names. Used to skip FEATURES entries the installed tshark version
+    does not recognise.
     """
-    result = raw_line.replace(",", "+")
+    proc = subprocess.run(
+        [tshark, "-G", "fields"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    supported: set[str] = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == "F":
+            supported.add(parts[2].strip())
+    return supported
+
+
+def _postprocess_line(raw: str) -> str:
+    """
+    Three-step H23Q post-processing pipeline. Order is mandatory.
+
+      1. "," → "+"    multi-value commas → summable strings
+      2. strip "      remove -E quote=d wrapping
+      3. "|" → ","    pipe separator → standard CSV comma  (MUST be last)
+    """
+    result = raw.replace(",", "+")
     result = result.replace('"', "")
     result = result.replace(_SEP, ",")
     return result
 
 
-def parse_row(header_cols: list[str], processed_line: str) -> dict[str, str | None]:
+def _parse_row(
+        header_cols: list[str],
+        processed_line: str,
+        valid_features: list[str],
+) -> dict[str, Any]:
     """
-    Split one post-processed CSV data line and return a dict of
-    {feature_name: raw_string_value | None} for MODEL_FEATURES only.
+    Split one post-processed CSV line and return a dict keyed by FEATURES.
+    Missing or empty values become None.
+    Features unsupported by this tshark version are always None.
     """
     parts = processed_line.split(",")
     while len(parts) < len(header_cols):
         parts.append("")
-    raw = dict(zip(header_cols, parts))
-    return {feat: (raw.get(feat, "").strip() or None) for feat in MODEL_FEATURES}
+    row_raw = dict(zip(header_cols, parts))
 
-
-def row_to_dataframe(row: dict[str, str | None]) -> pd.DataFrame:
-    """Wrap a feature dict in a single-row DataFrame."""
-    return pd.DataFrame([row], columns=MODEL_FEATURES)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#   Preprocessor  (mirrors scaling.py exactly)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class LivePreprocessor:
-    """
-    Applies the four scaling.py steps to a single-row DataFrame from the live
-    capture pipeline so it is aligned to the feature space the model expects.
-
-    Load once at startup; call preprocess(df) for every incoming packet.
-
-    Parameters
-    ----------
-    dataset_csv   : path to pcap-all-final.csv  (header used for OHE alignment)
-    scaler_joblib : path to scaler.joblib saved during training
-    """
-
-    def __init__(self, dataset_csv: str | Path, scaler_joblib: str | Path) -> None:
-        saved = joblib.load(scaler_joblib)
-        if isinstance(saved, dict):
-            self.scaler = saved["scaler"]
-            self.scaler_columns: list[str] = saved.get("scaler_columns", TO_SCALE_COLUMNS)
+    row: dict[str, Any] = {}
+    for feat in FEATURES:
+        if feat in valid_features:
+            val = row_raw.get(feat, "").strip()
+            row[feat] = val if val else None
         else:
-            self.scaler = saved
-            self.scaler_columns = TO_SCALE_COLUMNS
-
-        header_df = pd.read_csv(dataset_csv, nrows=0)
-        self.ohe_columns: list[str] = [c for c in header_df.columns if c != "Label"]
-
-    def fill_missing(self, df: pd.DataFrame) -> pd.DataFrame:
-        """FLAG_COLS NaN → -1 (distinct OHE category); all else → 0."""
-        for col in FLAG_COLS:
-            if col in df.columns:
-                df[col] = df[col].fillna(-1)
-        return df.fillna(0)
-
-    def resolve_compound(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Evaluate arithmetic strings like "3+8+5+1" → 17.0."""
-        obj_cols = [c for c in df.select_dtypes(include=["object", "string"]).columns
-                    if c != "Label"]
-        for col in obj_cols:
-            def _safe_eval(v, _c=col):
-                if not isinstance(v, str):
-                    return v
-                if not any(op in v for op in ("+", "-", "*", "/")):
-                    return v
-                try:
-                    return pd.eval(str(v))
-                except Exception:
-                    return v
-
-            df[col] = df[col].apply(_safe_eval)
-        return df
-
-    def ohe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """OHE FLAG_COLS then reindex to exact training column set."""
-        present = [c for c in FLAG_COLS if c in df.columns]
-        for col in present:
-            df[col] = df[col].astype(str)
-        df = pd.get_dummies(df, columns=present)
-        return df.reindex(columns=self.ohe_columns, fill_value=0)
-
-    def scale(self, df: pd.DataFrame) -> pd.DataFrame:
-        """MinMax-scale numeric columns using the fitted training scaler."""
-        cols = [c for c in self.scaler_columns if c in df.columns]
-        df[cols] = pd.to_numeric(df[cols].stack(), errors="coerce").unstack().fillna(0)
-        df[cols] = df[cols].astype(float)
-        df[cols] = self.scaler.transform(df[cols])
-        return df
-
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df = self.fill_missing(df)
-        df = self.resolve_compound(df)
-        df = self.ohe(df)
-        df = self.scale(df)
-        return df
+            row[feat] = None
+    return row
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#   DualModelRouter
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Column used to discriminate TCP vs QUIC in the preprocessed DataFrame.
-# After fill_missing + MinMax scaling: null → 0.0, present → float in (0, 1].
-_QUIC_COL = "quic.packet_length"
-
-
-class DualModelRouter:
+def _extract_source_ip(header_cols: list[str], raw_line: str) -> str | None:
     """
-    Routes a preprocessed packet DataFrame to either the TCP or the QUIC
-    classifier and returns the predicted label string.
-
-    Routing rule
-    ------------
-      quic.packet_length > 0  →  QUIC model
-      quic.packet_length == 0 →  TCP model
-
-    This mirrors the training-time protocol split performed in
-    model_utilities.py so each packet is always classified by the model
-    that was trained on its protocol family.
-
-    TCP model classes : Normal, http-loris, http-smuggle,
-                        http2-concurrent, http2-pause
-    QUIC model classes: Normal, http-flood, quic-flood, http-loris,
-                        quic-loris, fuzzing, quic-enc
-
-    Parameters
-    ----------
-    tcp_model_path  : path to XGB_Blackwall_TCP_classifier.joblib
-    quic_model_path : path to XGB_Blackwall_QUIC_classifier.joblib
+    Extract ip.src or ipv6.src from the raw (pre-postprocess) tshark line.
+    Must be called before _postprocess_line — comma→plus would corrupt IPs.
+    ip.src and ipv6.src are appended after FEATURES in the tshark command.
     """
-
-    def __init__(
-            self,
-            tcp_model_path: str | Path,
-            quic_model_path: str | Path,
-    ) -> None:
-        tcp_ckpt = joblib.load(tcp_model_path)
-        quic_ckpt = joblib.load(quic_model_path)
-
-        self._tcp_model = tcp_ckpt["model"]
-        self._tcp_labels = list(tcp_ckpt["encoder"].classes_)
-
-        self._quic_model = quic_ckpt["model"]
-        self._quic_labels = list(quic_ckpt["encoder"].classes_)
-
-        print(f"[Router] TCP  model — classes: {self._tcp_labels}")
-        print(f"[Router] QUIC model — classes: {self._quic_labels}")
-
-    def predict(self, df: pd.DataFrame) -> str:
-        """
-        Classify a single preprocessed packet row and return the label string.
-
-        Parameters
-        ----------
-        df : single-row DataFrame produced by LivePreprocessor.preprocess()
-
-        Returns
-        -------
-        str — e.g. "Normal", "http-flood", "http-smuggle"
-        """
-        X = df.values.astype(float)
-        if self._is_quic(df):
-            return self._quic_labels[int(self._quic_model.predict(X)[0])]
-        return self._tcp_labels[int(self._tcp_model.predict(X)[0])]
-
-    def predict_batch(self, df: pd.DataFrame) -> list[str]:
-        """
-        Classify a full DataFrame of preprocessed packets in two batched model
-        calls (one per protocol) and return labels aligned to df.index order.
-
-        Parameters
-        ----------
-        df : multi-row preprocessed DataFrame
-
-        Returns
-        -------
-        list[str] — predicted labels, same order as df rows
-        """
-        labels = [""] * len(df)
-        quic_mask = self._is_quic_series(df)
-        quic_idx = df.index[quic_mask].tolist()
-        tcp_idx = df.index[~quic_mask].tolist()
-
-        if quic_idx:
-            preds = self._quic_model.predict(df.loc[quic_idx].values.astype(float))
-            for i, row_idx in enumerate(quic_idx):
-                labels[df.index.get_loc(row_idx)] = self._quic_labels[int(preds[i])]
-
-        if tcp_idx:
-            preds = self._tcp_model.predict(df.loc[tcp_idx].values.astype(float))
-            for i, row_idx in enumerate(tcp_idx):
-                labels[df.index.get_loc(row_idx)] = self._tcp_labels[int(preds[i])]
-
-        return labels
-
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _is_quic(self, df: pd.DataFrame) -> bool:
-        """True if the single-row DataFrame represents a QUIC packet."""
-        if _QUIC_COL not in df.columns:
-            return False
-        try:
-            return float(df[_QUIC_COL].iloc[0]) > 0
-        except (TypeError, ValueError):
-            return False
-
-    def _is_quic_series(self, df: pd.DataFrame) -> pd.Series:
-        """Boolean Series: True for rows where quic.packet_length > 0."""
-        if _QUIC_COL not in df.columns:
-            return pd.Series(False, index=df.index)
-        return pd.to_numeric(df[_QUIC_COL], errors="coerce").fillna(0) > 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#   FileCapture  — offline / PCAP-file iterator
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class FileCapture:
-    """
-    Iterates over packets in a PCAP file using tshark (-r), yielding one
-    (source_ip, raw_df) tuple per packet — identical format to LiveCapture's
-    queue items, but synchronous and file-based.
-
-    Designed to be used directly in a for-loop:
-
-        for source_ip, df in FileCapture("capture.pcap", keylog="all.txt"):
-            processed = preprocessor.preprocess(df)
-            label = model.predict(processed.values.astype(float))
-
-    Parameters
-    ----------
-    pcap_path  : path to the input PCAP file
-    keylog     : path to NSS SSLKEYLOGFILE for TLS decryption (all.txt)
-    tshark_bin : explicit tshark path (auto-detected if None)
-
-    Yields
-    ------
-    (source_ip: str | None, raw_df: pd.DataFrame)
-        source_ip : ip.src or ipv6.src string, or None if not present
-        raw_df    : single-row DataFrame with raw (unpreprocessed) feature
-                    values, ready to feed into OfflinePreprocessor.preprocess()
-    """
-
-    def __init__(
-            self,
-            pcap_path: str | Path,
-            keylog: Optional[str | Path] = None,
-            tshark_bin: Optional[str] = None,
-    ) -> None:
-        self.pcap_path = Path(pcap_path)
-        self.keylog = str(keylog) if keylog and Path(keylog).exists() else None
-        self.tshark_bin = tshark_bin or find_tshark()
-
-        if not self.pcap_path.exists():
-            raise FileNotFoundError(f"PCAP not found: {self.pcap_path}")
-
-        if keylog and not self.keylog:
-            print(f"[FileCapture] WARN: keylog not found at {keylog} "
-                  "— TLS/HTTP2/QUIC fields will be empty")
-
-    def _build_cmd(self) -> list[str]:
-        cmd = [
-            self.tshark_bin,
-            "-r", str(self.pcap_path),
-            "-T", "fields",
-            "-E", f"separator={_SEP}",
-            "-E", "header=y",
-            "-E", "quote=d",
-        ]
-        if self.keylog:
-            cmd += ["-o", f"tls.keylog_file:{self.keylog}"]
-        for feat in MODEL_FEATURES:
-            cmd += ["-e", feat]
-        # ip.src / ipv6.src appended after model features for source IP tracking
-        cmd += ["-e", "ip.src", "-e", "ipv6.src"]
-        return cmd
-
-    def __iter__(self):
-        cmd = self._build_cmd()
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-
-        header_cols: list[str] = []
-
-        try:
-            for raw_line in proc.stdout:
-                raw_line = raw_line.rstrip("\n")
-                if not raw_line:
-                    continue
-
-                # first non-empty line is the tshark header
-                if not header_cols:
-                    clean_header = raw_line.replace('"', "").replace(_SEP, ",")
-                    header_cols = [c.strip() for c in clean_header.split(",")]
-                    continue
-
-                # extract source IP from raw line before comma→plus substitution
-                parts_raw = raw_line.replace('"', "").split(_SEP)
-                raw_dict = dict(zip(header_cols, parts_raw))
-                source_ip = (raw_dict.get("ip.src") or
-                             raw_dict.get("ipv6.src") or None)
-                if source_ip:
-                    source_ip = source_ip.strip() or None
-
-                # post-process and build single-row DataFrame
-                processed_line = postprocess_row(raw_line)
-                row = parse_row(header_cols, processed_line)
-                df = row_to_dataframe(row)
-
-                yield source_ip, df
-
-        finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            # log any tshark warnings to stderr
-            stderr_out = proc.stderr.read() if proc.stderr else ""
-            if stderr_out.strip():
-                lines = stderr_out.strip().splitlines()
-                print(f"[FileCapture] tshark warnings ({len(lines)} lines, first 3):")
-                for line in lines[:3]:
-                    print(f"             {line}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#   load_pcap_as_dataframe  — fast batch extraction for offline use
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def load_pcap_as_dataframe(
-        pcap_path: str | Path,
-        keylog: str | Path | None = None,
-        tshark_bin: str | None = None,
-) -> tuple[pd.DataFrame, list[str | None]]:
-    """
-    Run tshark on an entire PCAP in one shot and return a full DataFrame of
-    raw (unpreprocessed) features — one row per packet.
-
-    This is the fast path for offline testing: tshark runs once, all output
-    is collected with communicate(), then parsed by pd.read_csv in one
-    vectorised call.  Much faster than the per-packet FileCapture iterator
-    for large PCAPs.
-
-    Parameters
-    ----------
-    pcap_path  : input PCAP file
-    keylog     : TLS SSLKEYLOGFILE (all.txt) for decryption
-    tshark_bin : explicit tshark path (auto-detected if None)
-
-    Returns
-    -------
-    (df, source_ips)
-        df         : DataFrame with MODEL_FEATURES columns, raw string values
-        source_ips : list of ip.src / ipv6.src per row, aligned to df index
-    """
-    from io import StringIO
-
-    pcap_path = Path(pcap_path)
-    if not pcap_path.exists():
-        raise FileNotFoundError(f"PCAP not found: {pcap_path}")
-
-    tshark = tshark_bin or find_tshark()
-
-    cmd = [
-        tshark,
-        "-r", str(pcap_path),
-        "-T", "fields",
-        "-E", f"separator={_SEP}",
-        "-E", "header=y",
-        "-E", "quote=d",
-    ]
-    if keylog and Path(keylog).exists():
-        cmd += ["-o", f"tls.keylog_file:{keylog}"]
-    else:
-        if keylog:
-            print(f"[load_pcap] WARN: keylog not found at {keylog} "
-                  "— TLS/HTTP2/QUIC fields will be empty")
-    for feat in MODEL_FEATURES:
-        cmd += ["-e", feat]
-    # ip.src / ipv6.src appended after model features for source IP tracking
-    cmd += ["-e", "ip.src", "-e", "ipv6.src"]
-
-    print(f"[load_pcap] Running tshark on {pcap_path.name} ...")
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"tshark exited with code {proc.returncode}:\n{proc.stderr[:300]}"
-        )
-
-    if proc.stderr.strip():
-        lines = proc.stderr.strip().splitlines()
-        print(f"[load_pcap] tshark warnings ({len(lines)} lines, first 3):")
-        for line in lines[:3]:
-            print(f"            {line}")
-
-    # ── post-process entire output at once ────────────────────────────────────
-    # Same three UltraEdit steps applied to the whole string:
-    #   1. "," → "+"   (multi-value commas inside fields)
-    #   2. strip "     (remove -E quote=d wrapping)
-    #   3. "|" → ","   (our separator → standard CSV comma)
-    clean = proc.stdout.replace(",", "+").replace('"', "").replace(_SEP, ",")
-
-    csv_lines = clean.strip().splitlines()
-    if len(csv_lines) < 2:
-        raise RuntimeError("tshark produced no packet rows.")
-    print(f"[load_pcap] {len(csv_lines) - 1} packets extracted")
-
-    # ── parse into DataFrame keeping all values as raw strings ───────────────
-    df = pd.read_csv(
-        StringIO(clean),
-        sep=",",
-        dtype=str,
-        keep_default_na=False,
-        na_values=[""],
-        on_bad_lines="skip",
-    )
-    df.columns = [c.strip() for c in df.columns]
-
-    # ── extract source IPs before dropping extra columns ─────────────────────
-    source_ips: list[str | None] = []
-    for _, row in df.iterrows():
-        ip = row.get("ip.src") or row.get("ipv6.src")
-        if pd.isna(ip) or str(ip).strip() == "":
-            source_ips.append(None)
-        else:
-            source_ips.append(str(ip).strip())
-
-    # ── keep only model feature columns ──────────────────────────────────────
-    df = df.reindex(columns=MODEL_FEATURES)
-    df = df.replace("", float("nan"))
-
-    return df, source_ips
+    parts_raw = raw_line.replace('"', "").split(_SEP)
+    row_raw = dict(zip(header_cols, parts_raw))
+    ip = row_raw.get("ip.src") or row_raw.get("ipv6.src")
+    if ip:
+        ip = ip.strip()
+    return ip if ip else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -554,36 +173,32 @@ def load_pcap_as_dataframe(
 
 class LiveCapture:
     """
-    Captures live packets from a network interface using tshark, extracts
-    the 46 model features, preprocesses each row, classifies it via the
-    DualModelRouter, and puts the result on a queue.
-
-    Parameters
-    ----------
-    interface    : network interface name (e.g. "eth0", "en0")
-    preprocessor : fitted LivePreprocessor instance
-    router       : fitted DualModelRouter instance
-    bpf_filter   : optional BPF capture filter string (e.g. "tcp port 443")
-    keylog_file  : path to NSS SSLKEYLOGFILE for live TLS decryption.
-                   Defaults to /tmp/sslkeys.log — set SSLKEYLOGFILE in the
-                   environment of the monitored application so it writes
-                   TLS session keys there.
-    tshark_bin   : explicit tshark binary path (auto-detected if None)
+    Captures live packets from a network interface using tshark, applies the
+    full scaling.py preprocessing pipeline to each packet, and places the
+    preprocessed result on a queue for firewall_engine.py to consume.
 
     Queue items
     -----------
-    Each item placed on self.queue is:
-        (source_ip: str | None, label: str)
+    Each item on self.queue is a tuple:
+        (source_ip: str | None, preprocessed_df: pd.DataFrame)
 
-    source_ip : raw IP string from ip.src or ipv6.src, for firewall use
-    label     : predicted class string, e.g. "Normal", "http-flood"
+        source_ip       : ip.src or ipv6.src string, or None
+        preprocessed_df : single-row DataFrame, fully scaled and OHE-encoded,
+                          ready for model.predict() — no further preprocessing
+                          required in firewall_engine.py
+
+    Parameters
+    ----------
+    interface   : network interface name (e.g. "eth0", "en0", "Wi-Fi")
+    bpf_filter  : optional BPF capture filter (e.g. "dst host 10.0.0.1")
+    keylog_file : path to an NSS SSLKEYLOGFILE for live TLS decryption.
+                  Defaults to /tmp/sslkeys.log.
+    tshark_bin  : explicit tshark binary path (auto-detected if None)
     """
 
     def __init__(
             self,
             interface: str,
-            preprocessor: LivePreprocessor,
-            router: DualModelRouter,
             bpf_filter: Optional[str] = None,
             keylog_file: Optional[str] = None,
             tshark_bin: Optional[str] = None,
@@ -592,54 +207,58 @@ class LiveCapture:
             interface = "eth0" if platform.system() in ("Windows", "Linux") else "en0"
 
         self.interface = interface
-        self.preprocessor = preprocessor
-        self.router = router
         self.bpf_filter = bpf_filter
-        self.tshark_bin = tshark_bin or find_tshark()
         self.queue: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
 
-        # Resolve and ensure keylog file exists
+        # Resolve tshark binary and validate feature list once at init time
+        self._tshark = tshark_bin or _find_tshark()
+        supported = _get_supported_fields(self._tshark)
+        self._valid_features = [f for f in FEATURES if f in supported]
+        invalid = [f for f in FEATURES if f not in supported]
+        if invalid:
+            print(f"[LiveCapture] WARN: {len(invalid)} unsupported fields "
+                  f"will be NULL: {invalid}")
+
+        # Resolve keylog — create file if missing so tshark does not error
         self.keylog_file = keylog_file or _DEFAULT_KEYLOG
         if not os.path.exists(self.keylog_file):
             open(self.keylog_file, "a").close()
-        # Signal the monitored application to write TLS keys here
         os.environ["SSLKEYLOGFILE"] = self.keylog_file
 
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _build_cmd(self) -> list[str]:
-        """
-        Build the tshark live-capture command.
-        -l enables line-buffered output so rows arrive immediately.
-        ip.src and ipv6.src are appended AFTER model features — they are used
-        for source IP identification but are NOT model features.
-        """
         cmd = [
-            self.tshark_bin,
+            self._tshark,
             "-i", self.interface,
             "-l",  # line-buffered — critical for streaming
             "-T", "fields",
             "-E", f"separator={_SEP}",
             "-E", "header=y",
             "-E", "quote=d",
+            "-E", "occurrence=a",  # mirrors dataset_regenerator.py
         ]
         if self.bpf_filter:
             cmd += ["-f", self.bpf_filter]
         cmd += ["-o", f"tls.keylog_file:{self.keylog_file}"]
-        for feat in MODEL_FEATURES:
+        for feat in self._valid_features:
             cmd += ["-e", feat]
-        # Append source IP fields for firewall use (after model features)
+        # ip.src / ipv6.src appended after model features for source IP
+        # tracking — never included in the DataFrame passed to the model
         cmd += ["-e", "ip.src", "-e", "ipv6.src"]
         return cmd
 
     def _capture_loop(self) -> None:
         cmd = self._build_cmd()
-        print(f"[LiveCapture] interface={self.interface}"
-              + (f"  filter='{self.bpf_filter}'" if self.bpf_filter else ""))
-        print(f"[LiveCapture] TLS keylog: {self.keylog_file}")
-        print(f"[LiveCapture] tshark: {self.tshark_bin}")
+        print(f"[LiveCapture] interface  = {self.interface}")
+        print(f"[LiveCapture] keylog     = {self.keylog_file}")
+        print(f"[LiveCapture] tshark     = {self._tshark}")
+        if self.bpf_filter:
+            print(f"[LiveCapture] bpf_filter = {self.bpf_filter}")
+        print(f"[LiveCapture] features   = "
+              f"{len(self._valid_features)} / {len(FEATURES)} supported")
 
         proc = subprocess.Popen(
             cmd,
@@ -648,7 +267,7 @@ class LiveCapture:
             text=True,
             encoding="utf-8",
             errors="replace",
-            bufsize=1,  # line-buffered
+            bufsize=1,
         )
 
         header_cols: list[str] = []
@@ -664,29 +283,25 @@ class LiveCapture:
                 if not raw_line:
                     continue
 
-                # ── first non-empty line is the header ────────────────────
+                # ── first non-empty line is the tshark field header ────────
                 if not header_cols:
                     clean_header = raw_line.replace('"', "").replace(_SEP, ",")
                     header_cols = [c.strip() for c in clean_header.split(",")]
-                    print(f"[LiveCapture] tshark started: {len(header_cols)} columns")
+                    print(f"[LiveCapture] tshark started: "
+                          f"{len(header_cols)} columns")
                     continue
 
-                # ── extract source IP before comma→plus substitution ──────
-                parts_raw = raw_line.replace('"', "").split(_SEP)
-                raw_dict = dict(zip(header_cols, parts_raw))
-                source_ip = (raw_dict.get("ip.src") or
-                             raw_dict.get("ipv6.src") or None)
-                if source_ip:
-                    source_ip = source_ip.strip() or None
+                # ── extract source IP before postprocessing ────────────────
+                # Must happen on the raw line — comma→plus corrupts IP strings
+                source_ip = _extract_source_ip(header_cols, raw_line)
 
-                # ── post-process, preprocess, classify, enqueue ───────────
+                # ── postprocess → parse → build raw DataFrame → enqueue ───
                 try:
-                    processed_line = postprocess_row(raw_line)
-                    row = parse_row(header_cols, processed_line)
-                    df = row_to_dataframe(row)
-                    preprocessed = self.preprocessor.preprocess(df)
-                    label = self.router.predict(preprocessed)
-                    self.queue.put((source_ip, label))
+                    processed = _postprocess_line(raw_line)
+                    row = _parse_row(header_cols, processed,
+                                     self._valid_features)
+                    raw_df = pd.DataFrame([row], columns=FEATURES)
+                    self.queue.put((source_ip, raw_df))
                     seen += 1
                 except Exception as exc:
                     errors += 1
@@ -695,24 +310,34 @@ class LiveCapture:
 
         except Exception as exc:
             print(f"[LiveCapture] fatal loop error: {exc}")
+
         finally:
             proc.terminate()
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
-            print(f"[LiveCapture] stopped — classified={seen}, errors={errors}")
+            stderr_out = proc.stderr.read() if proc.stderr else ""
+            if stderr_out.strip():
+                lines = stderr_out.strip().splitlines()
+                print(f"[LiveCapture] tshark warnings "
+                      f"({len(lines)} lines, first 5):")
+                for line in lines[:5]:
+                    print(f"    {line}")
+            print(f"[LiveCapture] stopped — packets={seen}, errors={errors}")
 
     # ── public API ────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Start the capture in a background daemon thread."""
+        """Start live capture in a background daemon thread."""
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
         print(f"[LiveCapture] capture thread started on [{self.interface}]")
 
     def stop(self) -> None:
-        """Signal the capture loop to stop gracefully."""
+        """Signal the capture loop to stop and wait for the thread to finish."""
         self.stop_event.set()
-        print("[LiveCapture] stop requested.")
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=10)
+        print("[LiveCapture] stopped.")

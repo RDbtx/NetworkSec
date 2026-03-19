@@ -8,14 +8,12 @@ import pathlib
 import psutil
 import subprocess
 import platform
-from sklearn.preprocessing import MinMaxScaler
 from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from src.firewall.data_extraction import LiveCapture
 from collections import defaultdict, deque
 
 SRC_PATH = pathlib.Path(__file__).parent.parent
 MODEL_PATH = os.path.join(SRC_PATH, "./firewall/model/Blackwall.joblib")
-DATASET_PATH = os.path.join(SRC_PATH, "./model/output/pcap-all-final.csv")
 SCALER_PATH = os.path.join(SRC_PATH, "./model/output/scaler.joblib")
 
 # Classes that trigger a block action
@@ -32,23 +30,28 @@ DDOS_WINDOW_SECONDS = 60
 
 class LivePreprocessor:
     def __init__(self, saved_scaler=None):
-        self.ohe_columns: list = []
-
         if saved_scaler is not None:
             self.scaler = saved_scaler["scaler"] if isinstance(saved_scaler, dict) else saved_scaler
             self.scaler_columns = (saved_scaler["scaler_columns"]
                                    if isinstance(saved_scaler, dict) else TO_SCALE_COLUMNS)
-            self.scaler_fitted = True
-            print("[Preprocessor] Loaded training scaler.")
+            # ohe_columns is saved into scaler.joblib by scaling.py's minmax_scale()
+            # — no need to load the training CSV on the deployment machine
+            self.ohe_columns = (saved_scaler["ohe_columns"]
+                                if isinstance(saved_scaler, dict) and "ohe_columns" in saved_scaler
+                                else [])
+            if not self.ohe_columns:
+                raise RuntimeError(
+                    "[Preprocessor] scaler.joblib does not contain 'ohe_columns'. "
+                    "Re-run scaling.py to regenerate the scaler with OHE column info included."
+                )
+            print(f"[Preprocessor] Loaded training scaler "
+                  f"({len(self.scaler_columns)} scale cols, "
+                  f"{len(self.ohe_columns)} OHE cols).")
         else:
             raise RuntimeError(
                 "[Preprocessor] No saved scaler found. "
                 "Run scaling.py to generate scaler.joblib before starting the firewall."
             )
-
-        # checks which columns to oh encode
-        df = pd.read_csv(DATASET_PATH, nrows=0)
-        self.ohe_columns = [c for c in df.columns if c != "Label"]
 
     # ===========================================
     # ---   Preprocessing Helper Functions    ---
@@ -126,7 +129,7 @@ class Firewall:
             interface: str = "eth0",
             bpf_filter: str = None,
             block: bool = False,
-            batch_size: int = 1,
+            batch_size: int = 8,
             keylog_file: str = None,
     ):
 
@@ -163,6 +166,7 @@ class Firewall:
                 bpf = f"({bpf_filter}) and ({bpf})"
         else:
             bpf = bpf_filter
+
         self.capture = LiveCapture(
             interface=interface,
             bpf_filter=bpf_filter,
@@ -185,7 +189,6 @@ class Firewall:
         """Preprocess and run model inference. Returns list of label strings."""
         try:
             processed = self.preprocessor.preprocess(df)
-            # Align feature order to what the model expects
             X = processed.values.astype(float)
             indices = self.model.predict(X)
             return [self.label_names[i] for i in indices]
@@ -324,9 +327,6 @@ class Firewall:
     # ---        Main Firewall Pipeline       ---
     # ===========================================
 
-    # Maximum packets to hold in queue — drop oldest if exceeded to stay real-time
-    QUEUE_MAX_SIZE = 500
-
     def run(self):
         """Start capturing and classifying. Blocks until KeyboardInterrupt."""
         self.capture.start()
@@ -335,48 +335,31 @@ class Firewall:
         try:
             while not self.capture.stop_event.is_set():
 
-                # ── Drain up to batch_size packets at once ─────────────────
-                batch_ips: list = []
-                batch_dfs: list = []
-
                 # Block briefly waiting for at least one packet
                 try:
                     source_ip, raw_df = self.capture.queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
 
-                # Drop stale packets if queue is too deep (stay real-time)
-                q_size = self.capture.queue.qsize()
-                if q_size > self.QUEUE_MAX_SIZE:
-                    dropped = q_size - self.QUEUE_MAX_SIZE
-                    for _ in range(dropped):
-                        try:
-                            self.capture.queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    print(f"[Firewall] Dropped {dropped} stale packets to stay real-time")
+                # Collect first packet then drain up to batch_size - 1 more
+                # without blocking — process whatever is immediately available
+                batch_ips = [source_ip]
+                batch_dfs = [raw_df]
 
-                # Collect first packet
-                packets = [(source_ip, raw_df)]
-
-                # Drain remaining available packets up to batch_size
                 for _ in range(self.batch_size - 1):
                     try:
-                        packets.append(self.capture.queue.get_nowait())
+                        source_ip, raw_df = self.capture.queue.get_nowait()
+                        batch_ips.append(source_ip)
+                        batch_dfs.append(raw_df)
                     except queue.Empty:
                         break
 
-                # ── Process each packet and run inference ──────────────────
-                for source_ip, raw_df in packets:
+                # Run inference on the batch
+                combined = pd.concat(batch_dfs, ignore_index=True)
+                labels = self.predict(combined)
+                for i, label in enumerate(labels):
                     self.stats["total"] += 1
-                    batch_ips.append(source_ip)
-                    batch_dfs.append(raw_df)
-
-                if batch_dfs:
-                    combined = pd.concat(batch_dfs, ignore_index=True)
-                    labels = self.predict(combined)
-                    for i, label in enumerate(labels):
-                        self.handle_prediction(label, batch_ips[i])
+                    self.handle_prediction(label, batch_ips[i])
 
         except KeyboardInterrupt:
             print("\n[Firewall] Shutting down...")
