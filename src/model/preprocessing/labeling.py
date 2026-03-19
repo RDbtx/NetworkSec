@@ -3,8 +3,6 @@ import numpy as np
 import os
 from pathlib import Path
 
-ROOT_DIR = os.path.join(Path(__file__).resolve().parent.parent, "dataset")
-
 # =====================================
 # ---   Labeling Helper Functions   ---
 # =====================================
@@ -35,7 +33,7 @@ def http_flood_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     )
 
     new.loc[mask, "Label"] = "http-flood"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for http-flood: {np.sum(new['Label'] == 'http-flood')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for http-flood: {np.sum(new['Label'] == 'http-flood')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -62,7 +60,7 @@ def fuzzing_labeler(input_csv: str, out_csv: str, start_time: int, end_time: int
     )
 
     new.loc[mask, "Label"] = "fuzzing"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for fuzzing: {np.sum(new['Label'] == 'fuzzing')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for fuzzing: {np.sum(new['Label'] == 'fuzzing')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -92,7 +90,7 @@ def http_loris_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     )
 
     new.loc[mask, "Label"] = "http-loris"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for http-loris: {np.sum(new['Label'] == 'http-loris')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for http-loris: {np.sum(new['Label'] == 'http-loris')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -121,7 +119,7 @@ def http_stream_labeler(input_csv: str, out_csv: str, start_time_1: int, end_tim
                      new['http3.settings.qpack.max_table_capacity'] == 16))))
 
     new.loc[mask, "Label"] = "http-stream"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for http-stream: {np.sum(new['Label'] == 'http-stream')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for http-stream: {np.sum(new['Label'] == 'http-stream')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -148,7 +146,7 @@ def quic_flood_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     )
 
     new.loc[mask, "Label"] = "quic-flood"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for quic-flood: {np.sum(new['Label'] == 'quic-flood')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for quic-flood: {np.sum(new['Label'] == 'quic-flood')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -178,7 +176,7 @@ def quic_loris_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     )
 
     new.loc[mask, "Label"] = "quic-loris"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for quic-loris: {np.sum(new['Label'] == 'quic-loris')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for quic-loris: {np.sum(new['Label'] == 'quic-loris')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -204,7 +202,7 @@ def quic_enc_labeler(input_csv: str, out_csv: str, start_time: int, end_time: in
     )
 
     new.loc[mask, "Label"] = "quic-enc"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for quic-enc: {np.sum(new['Label'] == 'quic-enc')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for quic-enc: {np.sum(new['Label'] == 'quic-enc')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -230,7 +228,7 @@ def http_smuggler_labeler(input_csv: str, out_csv: str, start_time: int, end_tim
     )
 
     new.loc[mask, "Label"] = "http-smuggle"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for http-smuggle: {np.sum(new['Label'] == 'http-smuggle')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for http-smuggle: {np.sum(new['Label'] == 'http-smuggle')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -258,7 +256,7 @@ def http_concurrent_labeler(input_csv: str, out_csv: str, start_time: int, end_t
 
     new.loc[mask, "Label"] = "http2-concurrent"
     print(
-        f"{input_csv.removesuffix('.csv')} -> samples for http2-concurrent: {np.sum(new['Label'] == 'http2-concurrent')}")
+        f" - {input_csv.removesuffix('.csv')} -> samples for http2-concurrent: {np.sum(new['Label'] == 'http2-concurrent')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -289,7 +287,7 @@ def http_pause_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
     )
 
     new.loc[mask, "Label"] = "http2-pause"
-    print(f"{input_csv.removesuffix('.csv')} -> samples for http2-pause: {np.sum(new['Label'] == 'http2-pause')}")
+    print(f" - {input_csv.removesuffix('.csv')} -> samples for http2-pause: {np.sum(new['Label'] == 'http2-pause')}")
     new.to_csv(out_csv, index=False)
 
 
@@ -297,11 +295,13 @@ def http_pause_labeler(input_csv: str, out_csv: str, start_time: int, end_time: 
 # ---     Main Labeling Process     ---
 # =====================================
 
-def labeling():
+def labeling(dataset_dir : str):
     print("\n####### Labeling #######")
     print("Labeling dataset data...")
+
     # Att1
-    os.chdir(os.path.join(ROOT_DIR, "1-http-flood"))
+    print("\n[1-http-flood]")
+    os.chdir(os.path.join(dataset_dir, "1-http-flood"))
     http_flood_labeler("pcap1-litespeed.csv", "pcap1-litespeed-l.csv", 240, 300)
     http_flood_labeler("pcap1-caddy.csv", "pcap1-caddy-l.csv", 300, 360)
     http_flood_labeler("pcap1-nginx.csv", "pcap1-nginx-l.csv", 360, 420)
@@ -310,7 +310,8 @@ def labeling():
     http_flood_labeler("pcap1-h2o.csv", "pcap1-h2o-l.csv", 540, 600)
 
     # Att2
-    os.chdir(os.path.join(ROOT_DIR, "2-fuzzing"))
+    print("\n[2-fuzzing]")
+    os.chdir(os.path.join(dataset_dir, "2-fuzzing"))
     fuzzing_labeler("pcap2-litespeed.csv", "pcap2-litespeed-l.csv", 240, 300)
     fuzzing_labeler("pcap2-caddy.csv", "pcap2-caddy-l.csv", 300, 360)
     fuzzing_labeler("pcap2-nginx.csv", "pcap2-nginx-l.csv", 360, 420)
@@ -319,7 +320,8 @@ def labeling():
     fuzzing_labeler("pcap2-h2o.csv", "pcap2-h2o-l.csv", 540, 600)
 
     # Att3
-    os.chdir(os.path.join(ROOT_DIR, "3-http-loris"))
+    print("\n[3-http-lori]")
+    os.chdir(os.path.join(dataset_dir, "3-http-loris"))
     http_loris_labeler("pcap3-litespeed.csv", "pcap3-litespeed-l.csv", 240, 320)
     http_loris_labeler("pcap3-caddy.csv", "pcap3-caddy-l.csv", 300, 380)
     http_loris_labeler("pcap3-nginx.csv", "pcap3-nginx-l.csv", 360, 440)
@@ -328,7 +330,8 @@ def labeling():
     http_loris_labeler("pcap3-h2o.csv", "pcap3-h2o-l.csv", 540, 620)
 
     # Att4
-    os.chdir(os.path.join(ROOT_DIR, "4-http-stream"))
+    print("\n[4-http-stream]")
+    os.chdir(os.path.join(dataset_dir, "4-http-stream"))
     http_stream_labeler("pcap4-litespeed.csv", "pcap4-litespeed-l.csv", 240, 300, 780, 840)
     http_stream_labeler("pcap4-caddy.csv", "pcap4-caddy-l.csv", 300, 360, 840, 900)
     http_stream_labeler("pcap4-nginx.csv", "pcap4-nginx-l.csv", 360, 420, 900, 960)
@@ -337,7 +340,8 @@ def labeling():
     http_stream_labeler("pcap4-h2o.csv", "pcap4-h2o-l.csv", 540, 600, 1080, 1140)
 
     # Att5
-    os.chdir(os.path.join(ROOT_DIR, '5-quic-flood'))
+    print("\n[5-quic-flood]")
+    os.chdir(os.path.join(dataset_dir, '5-quic-flood'))
     quic_flood_labeler("pcap5-litespeed.csv", "pcap5-litespeed-l.csv", 240, 300)
     quic_flood_labeler("pcap5-caddy.csv", "pcap5-caddy-l.csv", 300, 360)
     quic_flood_labeler("pcap5-nginx.csv", "pcap5-nginx-l.csv", 360, 420)
@@ -346,7 +350,8 @@ def labeling():
     quic_flood_labeler("pcap5-h2o.csv", "pcap5-h2o-l.csv", 540, 600)
 
     # Att6
-    os.chdir(os.path.join(ROOT_DIR, "6-quic-loris"))
+    print("\n[6-quic-loris]")
+    os.chdir(os.path.join(dataset_dir, "6-quic-loris"))
     quic_loris_labeler("pcap6-litespeed.csv", "pcap6-litespeed-l.csv", 240, 320)
     quic_loris_labeler("pcap6-caddy.csv", "pcap6-caddy-l.csv", 300, 380)
     quic_loris_labeler("pcap6-nginx.csv", "pcap6-nginx-l.csv", 360, 440)
@@ -355,7 +360,8 @@ def labeling():
     quic_loris_labeler("pcap6-h2o.csv", "pcap6-h2o-l.csv", 540, 620)
 
     # Att7
-    os.chdir(os.path.join(ROOT_DIR, '7-quic-enc'))
+    print("\n[7-quic-enc]")
+    os.chdir(os.path.join(dataset_dir, '7-quic-enc'))
     quic_enc_labeler("pcap7-litespeed.csv", "pcap7-litespeed-l.csv", 240, 300)
     quic_enc_labeler("pcap7-caddy.csv", "pcap7-caddy-l.csv", 300, 360)
     quic_enc_labeler("pcap7-nginx.csv", "pcap7-nginx-l.csv", 360, 420)
@@ -364,7 +370,8 @@ def labeling():
     quic_enc_labeler("pcap7-h2o.csv", "pcap7-h2o-l.csv", 540, 600)
 
     # Att8
-    os.chdir(os.path.join(ROOT_DIR, '8-http-smuggle'))
+    print("\n[8-http-smuggle]")
+    os.chdir(os.path.join(dataset_dir, '8-http-smuggle'))
     http_smuggler_labeler("pcap8-litespeed.csv", "pcap8-litespeed-l.csv", 180, 300)
     http_smuggler_labeler("pcap8-caddy.csv", "pcap8-caddy-l.csv", 300, 420)
     http_smuggler_labeler("pcap8-nginx.csv", "pcap8-nginx-l.csv", 420, 540)
@@ -373,7 +380,8 @@ def labeling():
     http_smuggler_labeler("pcap8-h2o.csv", "pcap8-h2o-l.csv", 780, 900)
 
     # Att9
-    os.chdir(os.path.join(ROOT_DIR, '9-http2-concurrent'))
+    print("\n[9-http2-concurrent]")
+    os.chdir(os.path.join(dataset_dir, '9-http2-concurrent'))
     http_concurrent_labeler("pcap9-litespeed.csv", "pcap9-litespeed-l.csv", 180, 210, "http.host")
     http_concurrent_labeler("pcap9-caddy.csv", "pcap9-caddy-l.csv", 210, 240, "http2.length")
     http_concurrent_labeler("pcap9-nginx.csv", "pcap9-nginx-l.csv", 240, 270, "http.host")
@@ -382,7 +390,8 @@ def labeling():
     http_concurrent_labeler("pcap9-h2o.csv", "pcap9-h2o-l.csv", 330, 360, "http2.length")
 
     # Att10
-    os.chdir(os.path.join(ROOT_DIR, "10-http2-pause"))
+    print("\n[10-http2-pause]")
+    os.chdir(os.path.join(dataset_dir, "10-http2-pause"))
     http_pause_labeler("pcap10-litespeed.csv", "pcap10-litespeed-l.csv", 180, 210, "http.host")
     http_pause_labeler("pcap10-caddy.csv", "pcap10-caddy-l.csv", 210, 240, "http2.length")
     http_pause_labeler("pcap10-nginx.csv", "pcap10-nginx-l.csv", 240, 270, "http.host")

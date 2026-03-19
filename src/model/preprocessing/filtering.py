@@ -4,9 +4,6 @@ import os
 import glob
 from pathlib import Path
 
-DATASET_DIR = os.path.join(Path(__file__).resolve().parent.parent, "dataset")
-OUTPUT_DIR = os.path.join(Path(__file__).resolve().parent.parent, "output")
-
 FEATURES = [
     "frame.len", "ip.len", "tcp.len", "tcp.hdr_len", "tcp.flags.ack",
     "tcp.flags.push", "tcp.flags.reset", "tcp.flags.syn", "tcp.flags.fin",
@@ -43,7 +40,7 @@ def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
     """
     merged_data = pd.DataFrame()
     for i, fileName in enumerate(csv_files):
-        cprint(f" - Progress: {i + 1}/{len(csv_files)} | {os.path.basename(fileName)}", "green")
+        cprint(f" - Progress: {i + 1:<2}/{len(csv_files)} | {os.path.basename(fileName)}", "green")
         data = pd.read_csv(fileName, sep=',', on_bad_lines='skip', low_memory=False)
         new = data.filter(FEATURES)
         merged_data = pd.concat([merged_data, new], ignore_index=True)
@@ -52,7 +49,7 @@ def merge_and_filter_data(csv_files: list) -> pd.DataFrame:
     return merged_data
 
 
-def save_merged_csv(data: pd.DataFrame) -> str:
+def save_merged_csv(data: pd.DataFrame, output_dir : str) -> str:
     """
     Saves a DataFrame to a CSV file in the output directory,
     creating the directory if it does not exist.
@@ -64,8 +61,8 @@ def save_merged_csv(data: pd.DataFrame) -> str:
     - output_path: The full file path where the CSV was saved.
 
     """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output_path = os.path.join(OUTPUT_DIR, "pcap-all.csv")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "pcap-all.csv")
     data.to_csv(output_path, index=False)
     print("Saved merged file to:", output_path)
     return output_path
@@ -75,18 +72,18 @@ def save_merged_csv(data: pd.DataFrame) -> str:
 # ---   Main Filtering Process      ---
 # =====================================
 
-def filtering() -> str:
+def filtering(dataset_dir: str) -> str:
     print("\n####### Filtering #######")
 
-    print("Looking for CSV files in:", DATASET_DIR)
-    csv_files = glob.glob(os.path.join(DATASET_DIR, "**", "*-l.csv"),
+    print("Looking for CSV files in:", dataset_dir)
+    csv_files = glob.glob(os.path.join(dataset_dir, "**", "*-l.csv"),
                           recursive=True)  # labeled csvs are marked with '-l'
 
     print(f"Found {len(csv_files)} CSV file(s):")
     for file in csv_files:
-        print(f"\t - {file}")
+        print(f" - {file}")
 
     print("\nFiltering dataset data...")
     data = merge_and_filter_data(csv_files)
     print("Filtering Complete!\n")
-    return save_merged_csv(data)
+    return save_merged_csv(data, dataset_dir)

@@ -7,16 +7,22 @@
 
 ## Summary
 
-Four distinct problems were identified and resolved during validation of the tshark-based PCAP extraction pipeline and
-diagnosis of the trained XGBoost classifier:
+Seven problems were identified and worked through iteratively:
 
-1. **Fixed** — A broken tshark extraction caused by a Unicode encoding bug in the separator character (α → `|`).
-2. **Resolved by decision** — Residual pyshark multi-value field limitations on reassembled TCP/TLS packets → pyshark
-   removed entirely, tshark is now the sole extraction backend.
-3. **Root-caused** — A fundamental class definition mismatch causing 46–92% miss rates even on training data, confirmed
-   by confusion matrix analysis.
-4. **Fixed** — `LABEL_MAP` updated from 5 collapsed classes to 10 fine-grained classes; `num_class` updated accordingly.
-   Retraining required.
+1. **Fixed** — tshark extraction broken by Unicode encoding bug in separator (α → `|`).
+2. **Resolved** — pyshark removed entirely; tshark is the sole extraction backend (100% match against training CSVs
+   across 371M comparisons).
+3. **Root-caused** — class definition mismatch caused 46–92% miss rates even on training data.
+4. **Partially fixed** — 10-class fine-grained labels: some classes improved dramatically (`quic-enc` 98.5%,
+   `http-smuggle` 100%), QUIC flood/loris classes unchanged.
+5. **Partially fixed** — dual-model architecture (TCP + QUIC): TCP model is production-ready (AUC 0.998, `http-smuggle`
+   100%, Normal 100%). QUIC flood/loris classes still fail.
+6. **Root-caused** — "ghost values": QUIC fields carried over into TCP packets due to tshark not resetting per-packet
+   fields between dissections. Fixed by regenerating the dataset with `-E occurrence=a`.
+7. **Open** — After dataset regeneration, the single 10-class model outperforms the dual-model on the new data.
+   `quic-flood` regressed to 2% recall in both architectures on the new dataset. `quic-loris` and `http-loris` remain at
+   0–10% recall. These QUIC volumetric/slow attacks are not separable from Normal QUIC traffic at the per-packet level —
+   flow-level features are required.
 
 ---
 
@@ -405,12 +411,400 @@ fine-grained labels from `labeling.py`. Only `model_utilities.py` and `main_mode
 
 ---
 
-## 6. Summary of All Changes Made
+## 6. Retraining Results: 10-Class Model
 
-| File                  | Change                                                                                                                                                  |
-|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `pcap_vs_csv_diff.py` | Built from scratch; tshark-only extraction; fixed separator α → `\|`; per-feature MISSING/EXTRA/DIFF breakdown; batch runner over all 53 PCAP/CSV pairs |
-| `data_extraction.py`  | Removed pyshark entirely; added `FileCapture` (offline iterator), `LiveCapture` (live interface), `load_pcap_as_dataframe` (batch), `LivePreprocessor`  |
-| `offline_testing.py`  | Replaced pyshark loop with `FileCapture`; added `OfflinePreprocessor`; added `diagnose_vs_labels()` for ground-truth comparison                         |
-| `model_utilities.py`  | Updated `LABEL_MAP` from 5 collapsed classes to 10 fine-grained classes; removed class merging that caused 46–92% miss rates                            |
-| `main_model.py`       | Updated `num_class=5` → `num_class=10` on XGBoost and LightGBM                                                                                          |
+The model was retrained with the updated `LABEL_MAP` (10 fine-grained classes). The results are a significant
+improvement for some classes but reveal that the Normal-bleed problem is partially inherent to the dataset, not just the
+label collapsing.
+
+### 6.1 Training Confusion Matrix (5,633,425 samples — 10 classes)
+
+| Class            | Correct    | → Normal | Other errors | Recall    |
+|------------------|------------|----------|--------------|-----------|
+| Normal           | 5,100,000+ | —        | ~65,119 FP   | ~98.7%    |
+| fuzzing          | 9,652      | 3,680    | 0            | **72.4%** |
+| http-flood       | 159,314    | 139,940  | 32           | **53.2%** |
+| http-loris       | 3,577      | 38,518   | 2,648        | **8.0%**  |
+| http-smuggle     | 1,797      | 0        | 0            | **100%**  |
+| http2-concurrent | 27,465     | 539      | 8,160        | 75.3%     |
+| http2-pause      | 23,652     | 282      | 8,195        | 74.4%     |
+| quic-enc         | 3,498      | 0        | 0            | **100%**  |
+| quic-flood       | 14,957     | 17,987   | 3,860        | 40.8%     |
+| quic-loris       | 124        | 14,348   | 89           | **0.9%**  |
+
+### 6.2 Testing Confusion Matrix (3,755,618 samples — 10 classes)
+
+| Class            | Correct    | → Normal | Other errors | Recall    |
+|------------------|------------|----------|--------------|-----------|
+| Normal           | 3,400,000+ | —        | ~40,496 FP   | ~98.8%    |
+| fuzzing          | 6,477      | 2,410    | 3            | **72.9%** |
+| http-flood       | 106,566    | 92,944   | 14           | **53.3%** |
+| http-loris       | 2,183      | 25,851   | 1,795        | **7.4%**  |
+| http-smuggle     | 1,198      | 0        | 0            | **100%**  |
+| http2-concurrent | 18,247     | 377      | 5,485        | 75.2%     |
+| http2-pause      | 15,766     | 197      | 5,457        | 74.1%     |
+| quic-enc         | 2,295      | 36       | 0            | **98.5%** |
+| quic-flood       | 9,919      | 12,142   | 2,475        | 40.9%     |
+| quic-loris       | 75         | 9,564    | 67           | **0.8%**  |
+
+### 6.3 Comparison: 5-Class vs 10-Class Model
+
+| Class (old)     | Sub-classes (new) | Old recall | New recall | Change           |
+|-----------------|-------------------|------------|------------|------------------|
+| DDoS-flooding   | http-flood        | 53.4%      | 53.3%      | ≈ no change      |
+| DDoS-flooding   | quic-flood        | 53.4%      | 40.9%      | ▼ worse          |
+| DDoS-loris      | http-loris        | 8.1%       | 7.4%       | ≈ no change      |
+| DDoS-loris      | quic-loris        | 8.1%       | **0.8%**   | ▼ much worse     |
+| Transport-layer | fuzzing           | 78.7%      | 72.9%      | ▼ slightly worse |
+| Transport-layer | quic-enc          | 78.7%      | **98.5%**  | ▲ much better    |
+| HTTP/2-attacks  | http2-concurrent  | 98.9%      | 75.2%      | ▼ split cost     |
+| HTTP/2-attacks  | http2-pause       | 98.9%      | 74.1%      | ▼ split cost     |
+| HTTP/2-attacks  | http-smuggle      | 98.9%      | **100%**   | ▲ perfect        |
+
+### 6.4 Analysis of Remaining Problems
+
+The 10-class model did not resolve the core issue for QUIC-based flood classes. The miss rates are essentially unchanged
+or worse:
+
+**`http-flood` — 46.7% miss rate (unchanged from old model)**
+The class still mixes QUIC-capable servers (caddy, h2o, litespeed, cloudflare — pure QUIC packets) with TCP-capable
+servers (nginx, windows — TCP packets). Splitting by attack type did not help because the split is still within each
+class by server, not by protocol. The 139,940 training samples misclassified as Normal are the QUIC-based http-flood
+packets that the model cannot distinguish from normal QUIC traffic.
+
+**`quic-loris` — 99.2% miss rate (catastrophic)**
+This is a sample size problem. `quic-loris` has extremely few correctly classified samples (124 training, 75 testing).
+The entire class bleeds into Normal. The dataset likely has very few `quic-loris` samples relative to Normal, and after
+stratified 60/40 split the class is too small for the model to learn.
+
+**`http-loris` — 88–92% miss rate (unchanged)**
+Same structural issue as `http-flood` — the attack packets on QUIC-capable servers use QUIC, while the model expects TCP
+slow-connection patterns.
+
+**`quic-flood` — 54–59% miss rate (worse than before)**
+Previously these packets were grouped with TCP floods under `DDoS-flooding` and the TCP component provided enough
+signal. Now isolated as `quic-flood` alone, the class is predominantly QUIC packets that overlap heavily with Normal
+QUIC traffic.
+
+**`http2-concurrent` and `http2-pause` — ~75% recall (regression from ~99%)**
+These were previously well-classified under the `HTTP/2-attacks` umbrella. When split into two separate classes they
+bleed into each other (5,485 http2-concurrent predicted as http2-pause and vice versa), because both attacks share
+HTTP/2 frame length patterns and the distinguishing features are subtle.
+
+### 6.5 Root Cause Persists: Server-Level Protocol Heterogeneity
+
+Splitting labels by attack type was necessary but not sufficient. The remaining problem is that **each attack label
+still contains packets from multiple server types with different underlying protocols**. For example:
+
+- `http-flood` on caddy → QUIC packets
+- `http-flood` on nginx → TCP packets
+- Both are labeled `http-flood`
+
+The fix needs to go one level deeper. Options:
+
+**Option A — Split by protocol within each label (recommended)**
+Add a protocol discriminator to the label: `http-flood-quic` vs `http-flood-tcp`. This gives the model internally
+consistent classes.
+
+```python
+# In labeling.py, use different labels per server type
+# QUIC-capable servers: caddy, h2o, litespeed, cloudflare
+# TCP servers: nginx, windows
+```
+
+**Option B — Add protocol as an explicit feature**
+Add a binary `is_quic` feature (1 if `quic.packet_length` is non-null, 0 otherwise) before training. This gives the
+model a clean discriminator between TCP and QUIC packets within each class, allowing it to learn two sub-boundaries per
+class.
+
+**Option C — Train separate models per protocol**
+Train one model on TCP traffic and one on QUIC traffic, routing incoming packets to the appropriate model based on
+whether `quic.packet_length` is non-null. This is the most architecturally clean solution.
+
+**Option C was implemented.** See Section 7.
+
+---
+
+## 7. Dual-Model Architecture Results
+
+Option C was implemented: the dataset is split by protocol at training time using `quic.packet_length > 0` as the
+discriminator. Two separate XGBoost models are trained. At inference time the `DualModelRouter` (embedded in
+`data_extraction.py`) routes each packet to the appropriate model.
+
+**TCP model** — Normal, http-loris, http-smuggle, http2-concurrent, http2-pause
+**QUIC model** — Normal, http-flood, quic-flood, http-loris, quic-loris, fuzzing, quic-enc
+
+### 7.1 TCP Model Results
+
+| Metric      | Training   | Testing    |
+|-------------|------------|------------|
+| Accuracy    | 0.9890     | 0.9889     |
+| F1 macro    | 0.8494     | 0.8490     |
+| AUC (macro) | **0.9981** | **0.9980** |
+
+**Per-class performance (testing):**
+
+| Class            | Precision | Recall   | F1   | Notes                            |
+|------------------|-----------|----------|------|----------------------------------|
+| Normal           | 1.00      | 1.00     | 1.00 | Perfect                          |
+| http-smuggle     | 0.97      | **1.00** | 0.98 | Perfect recall                   |
+| http2-concurrent | 0.70      | 0.76     | 0.73 | Some bleed with http2-pause      |
+| http2-pause      | 0.64      | 0.74     | 0.69 | Some bleed with http2-concurrent |
+
+**Confusion matrix highlights (testing, 1,551,266 samples):**
+
+- Normal: 1,498,826 correct, 5,713 false positives (0.38%)
+- http-smuggle: 1,198/1,198 correct — zero misclassified
+- http2-concurrent: 18,238 correct, 5,492 → http2-pause, 379 → Normal
+- http2-pause: 15,832 correct, 5,370 → http2-concurrent, 218 → Normal
+
+**The TCP model is strong.** AUC of 0.998 indicates near-perfect probability separation. The only confusion is between
+`http2-concurrent` and `http2-pause`, which share very similar HTTP/2 frame length patterns — distinguishing them may
+require sequence-level features beyond single-packet extraction. Train/test performance is virtually identical,
+confirming no overfitting.
+
+### 7.2 QUIC Model Results
+
+| Metric      | Training | Testing |
+|-------------|----------|---------|
+| Accuracy    | 0.9168   | 0.9166  |
+| F1 macro    | 0.4403   | 0.4389  |
+| AUC (macro) | 0.8955   | 0.8939  |
+
+**Per-class performance (testing):**
+
+| Class      | Precision | Recall   | F1   | Notes                    |
+|------------|-----------|----------|------|--------------------------|
+| Normal     | 0.93      | 0.98     | 0.96 | Good                     |
+| http-flood | 0.76      | **0.51** | 0.61 | Still ~49% missed        |
+| http-loris | 0.66      | **0.06** | 0.12 | Near-zero recall         |
+| quic-flood | 0.70      | **0.40** | 0.51 | 60% missed               |
+| quic-loris | 0.00      | **0.00** | 0.00 | Zero correct predictions |
+
+**Confusion matrix highlights (testing, 2,192,968 samples):**
+
+- http-flood: 102,369 correct, **97,054 → Normal** (48.7% miss rate)
+- http-loris: 1,922 correct, **25,984 → Normal** (93.5% miss rate)
+- quic-flood: 9,854 correct, **12,173 → Normal** (55.3% miss rate)
+- quic-loris: 0 correct, **9,500 → Normal** (100% miss rate)
+
+### 7.3 Dual-Model vs. Previous Models Comparison
+
+The transition to a **dual-model architecture** (splitting into specialized TCP and QUIC classifiers) has
+yielded a significant performance boost for TCP-based attacks and protocol-specific
+categorization. While the TCP side is now highly optimized, certain QUIC volumetric attacks
+remain a challenge due to feature overlap with normal traffic.
+
+| Class                | 5-class recall | 10-class recall | TCP Model (Test) | QUIC Model (Test) | Best Result        |
+|:---------------------|:---------------|:----------------|:-----------------|:------------------|:-------------------|
+| **Normal**           | 98.5%          | 98.8%           | 99%              | 98%               | **TCP: Perfect**   |
+| **http-smuggle**     | 98.9%          | 100%            | 100%             | —                 | **TCP: Perfect**   |
+| **http2-concurrent** | 98.9%          | 75.2%           | 75%              | —                 | ≈ Unchanged        |
+| **http2-pause**      | 98.9%          | 74.1%           | 73%              | —                 | ≈ Unchanged        |
+| **http-flood**       | 53.4%          | 53.3%           | 0%               | 51%               | No improvement     |
+| **quic-flood**       | 53.4%          | 40.9%           | —                | 40%               | No improvement     |
+| **http-loris**       | 8.1%           | 7.4%            | —                | 6%                | No improvement     |
+| **quic-loris**       | 8.1%           | 0.8%            | 0%               | 0%                | **Worse**          |
+| **fuzzing**          | 78.7%          | 72.9%           | 72%              | —                 | —                  |
+| **quic-enc**         | 78.7%          | 98.5%           | 99%              | —                 | **TCP Model High** |
+
+---
+
+### 7.4 Root Cause of Persistent QUIC Failures
+
+[While the protocol split "fixed" the TCP side by isolating protocol-specific feature noise, the QUIC model continues to
+struggle with flood and "loris" classes.
+Stability over Overfitting: The training and testing recall rates are nearly identical—for example, `http-flood` shows
+**51% recall** in both the training and testing phases. This confirms the
+model is not overfitting; it is simply unable to find a statistical boundary between these attacks and "Normal" QUIC
+traffic.
+
+Feature Indistinguishability:** At the per-packet level, QUIC flood and loris attacks appear identical
+to Normal traffic. The current 46-feature set (including `quic.packet_length` and `quic.spin_bit`) does
+not capture the **volume and timing** signatures necessary to distinguish these threats.
+The "Loris" Blind Spot:** The `quic-loris` class is currently **structurally unlearnable** in this
+setup. In training, **14,254 out of 14,469** samples were misclassified as
+`Normal`, resulting in **0% recall**.
+
+---
+
+### 7.5 Architectural Evolution
+
+The dual-model approach confirms that per-packet classification has reached its limit for QUIC volumetric and
+state-based attacks. To improve detection, the architecture must evolve:
+
+1. **Flow-level Aggregation:** Shifting from single packets to time-windowed statistics per source IP. Flood attacks (
+   high rate) and loris attacks (extreme low rate/high duration) would become visible through features like packet rate
+   and inter-arrival time (IAT) variance.
+2. **Session-State Tracking:** Monitoring the number of concurrent streams and the ratio of headers sent to data
+   payload. This requires stateful processing beyond what basic per-packet extraction provides.
+
+Conclusion: The TCP model is production-ready with high precision and near-perfect recall for core
+classes. The QUIC model requires a shift to flow-based features to effectively detect
+flood and loris threats.
+
+### 7.6 Current Problems ###
+
+### 7.6 Protocol Leakage and Data Integrity Issues
+
+The current dual-model architecture reveals a significant data integrity issue: a large volume of non-QUIC packets are
+being incorrectly categorized as QUIC traffic. This is evidenced by the distribution of
+`http-flood` samples, where only **101 packets** remained in the TCP model while **199,423 packets** were pulled into
+the QUIC model.
+
+#### Root Cause: Feature "Ghosting"
+
+The presence of QUIC parameters in HTTP/1.1 traffic is likely not a characteristic of the attack itself, but a byproduct
+of a flawed feature extraction process. In network traffic exporters like `tshark`, if TCP and QUIC features
+are stored in a single unified schema, columns for QUIC-specific metrics (e.g., `quic.packet_length`) exist for every
+row.
+
+If the extraction logic fails to explicitly clear these variables between packets, "memory persistence" or **ghost
+values** occur. This results in TCP-based packets carrying residual QUIC metadata, which triggers the
+`split_by_protocol` logic—specifically the `quic_mask`—and misdirects the traffic to the wrong classifier.
+
+#### Impact on Model Performance
+
+This leakage creates two primary points of failure:
+
+TCP Training Deficit:** The TCP model is deprived of sufficient training data for classes like
+`http-flood`, leading to a **0% recall** because the model cannot establish a baseline for the attack without its
+representative samples.
+QUIC Model Pollution: The QUIC classifier is forced to process high-volume TCP-based attacks using features
+designed for encrypted UDP traffic. This results in mediocre performance, as seen in the **51% recall**
+for `http-flood` in the QUIC test set, where the model struggles to distinguish "ghost" features from legitimate QUIC
+traffic.
+
+To resolve this, the feature extraction pipeline must be modified to ensure that protocol-specific fields are strictly
+nullified or reset to zero when the underlying transport protocol changes.
+
+---
+
+---
+
+## 8. Dataset Regeneration and New Model Results
+
+### 8.1 Dataset Regeneration: Fixing Ghost Values
+
+The `dataset_regenerator.py` script was written to regenerate the CSVs from the original PCAPs using tshark 4.6.0. The
+key fix is the `-E occurrence=a` flag:
+
+```bash
+tshark -r pcap -T fields -E separator=| -E header=y -E quote=d -E occurrence=a ...
+```
+
+**`-E occurrence=a`** tells tshark to emit **all** occurrences of a repeated field for each packet, not just the first.
+Without this flag, when a TCP packet is reassembled from multiple segments, tshark may carry forward QUIC field values
+from a previously dissected packet in the same capture file. This is the root cause of "ghost values" identified in
+Section 7.6 — TCP-based `http-flood` packets appearing to have `quic.packet_length > 0` and being routed to the QUIC
+model, leaving only 71/106 samples in the TCP model.
+
+The regenerator also adds extra labeling-support columns (`frame.time_relative`, `ip.src`, `ip.dst`, `http.host`,
+`udp.dstport`, `dns.id`, `urlencoded-form.key`) that are needed by `labeling.py` but were absent from the original
+46-feature CSVs, and validates all fields against tshark's supported field list before extraction.
+
+### 8.2 New Dataset — Dual-Model Results
+
+Both models were retrained on the regenerated dataset.
+
+**TCP Model (8 classes, 1,565,030 test samples):**
+
+| Class            | Precision | Recall   | F1   | Notes                                          |
+|------------------|-----------|----------|------|------------------------------------------------|
+| Normal           | 1.00      | 1.00     | 1.00 | Perfect                                        |
+| fuzzing          | 0.83      | **0.70** | 0.76 | New in TCP model                               |
+| http-flood       | 0.00      | **0.00** | 0.00 | Only 71 test samples — near-absent after split |
+| http-smuggle     | 0.97      | **1.00** | 0.98 | Perfect                                        |
+| http2-concurrent | 0.70      | 0.75     | 0.73 | Stable                                         |
+| http2-pause      | 0.64      | 0.74     | 0.69 | Stable                                         |
+| quic-enc         | 0.83      | **0.99** | 0.90 | Excellent                                      |
+| quic-loris       | 0.00      | **0.00** | 0.00 | Only 61 test samples — near-absent after split |
+
+AUC (macro): **0.9966** | Accuracy: 0.9861
+
+**QUIC Model (5 classes, 2,190,588 test samples):**
+
+| Class      | Precision | Recall   | F1   | Notes                                |
+|------------|-----------|----------|------|--------------------------------------|
+| Normal     | 0.94      | 0.98     | 0.96 | Good                                 |
+| http-flood | 0.73      | **0.66** | 0.69 | Improved from 51%                    |
+| http-loris | 0.62      | **0.07** | 0.13 | Near-zero, unchanged                 |
+| quic-flood | 0.89      | **0.02** | 0.03 | **Catastrophic regression from 40%** |
+| quic-loris | 0.00      | **0.00** | 0.00 | Still zero                           |
+
+AUC (macro): **0.8909** | Accuracy: 0.9204
+
+The `quic-flood` regression from 40% to 2% recall is significant. On the old dataset many QUIC-flood packets had
+`quic.packet_length` populated via ghost values from other packets; removing ghost values stripped that spurious signal.
+The `quic-flood` class in the new clean dataset is genuinely indistinguishable from Normal QUIC at the per-packet level.
+
+### 8.3 New Dataset — Single 10-Class Model Results
+
+The single 10-class model was also retrained on the new dataset. Results (testing, 3,755,618 samples):
+
+| Class            | Precision | Recall   | F1   | Notes                                    |
+|------------------|-----------|----------|------|------------------------------------------|
+| Normal           | 0.96      | 0.98     | 0.97 |                                          |
+| fuzzing          | 0.83      | **0.71** | 0.77 |                                          |
+| http-flood       | 0.74      | **0.67** | 0.70 | **Best result across all architectures** |
+| http-loris       | 0.64      | **0.10** | 0.17 | Slight improvement                       |
+| http-smuggle     | 0.97      | **1.00** | 0.98 | Perfect                                  |
+| http2-concurrent | 0.71      | **0.76** | 0.73 |                                          |
+| http2-pause      | 0.64      | **0.74** | 0.68 |                                          |
+| quic-enc         | 0.83      | **0.96** | 0.89 |                                          |
+| quic-flood       | 0.88      | **0.02** | 0.04 | Same regression as QUIC dual model       |
+| quic-loris       | 0.00      | **0.00** | 0.00 |                                          |
+
+AUC (macro): **0.9681** | Accuracy: 0.9490
+
+### 8.4 Architecture Comparison: All Models on New Dataset
+
+| Class            | Dual TCP  | Dual QUIC | Single 10-class | Winner              |
+|------------------|-----------|-----------|-----------------|---------------------|
+| Normal           | **100%**  | 98%       | 98%             | Dual TCP            |
+| fuzzing          | 70%       | —         | **71%**         | Single ≈            |
+| http-flood       | 0%        | 66%       | **67%**         | Single              |
+| http-loris       | —         | 7%        | **10%**         | Single              |
+| http-smuggle     | **100%**  | —         | **100%**        | Tied                |
+| http2-concurrent | 75%       | —         | **76%**         | Single ≈            |
+| http2-pause      | 74%       | —         | **74%**         | Tied                |
+| quic-enc         | **99%**   | —         | 96%             | Dual TCP            |
+| quic-flood       | —         | 2%        | 2%              | Tied (both fail)    |
+| quic-loris       | 0%        | 0%        | 0%              | All fail            |
+| **F1 macro**     | 0.635     | 0.363     | **0.597**       | Single              |
+| **AUC macro**    | **0.997** | 0.891     | 0.968           | Dual TCP (TCP-only) |
+
+**The single 10-class model on the new dataset is the best overall architecture** for the current feature set. It
+achieves the highest `http-flood` recall (67%), the highest `http-loris` recall (10%), and the best macro F1 across all
+classes. The dual-model's TCP branch is stronger for its specific classes (quic-enc 99%, Normal 100%) but its QUIC
+branch underperforms the single model on http-flood.
+
+### 8.5 Conclusion on Current Architecture Limits
+
+After regenerating the dataset with `-E occurrence=a`, both architectures converge on the same fundamental ceiling:
+
+| Class family               | Status               | Reason                                   |
+|----------------------------|----------------------|------------------------------------------|
+| Normal, http-smuggle       | ✅ Solved             | Distinctive TCP features                 |
+| fuzzing, quic-enc, http2-* | ✅ Good (70–99%)      | Sufficient per-packet signal             |
+| http-flood                 | ⚠️ 67% ceiling       | QUIC flood vs Normal QUIC overlap        |
+| http-loris                 | ⚠️ 10% ceiling       | Slow QUIC connection = Normal QUIC       |
+| quic-flood                 | ❌ 2% — not learnable | Indistinguishable per-packet from Normal |
+| quic-loris                 | ❌ 0% — not learnable | Structurally identical to Normal QUIC    |
+
+Improving `quic-flood` and `quic-loris` requires flow-level features (packet rate, inter-arrival time, bytes/sec per
+source IP) that are not available in single-packet tshark extraction. Improving `http-flood` and `http-loris` further
+likely requires the same.
+
+---
+
+## 9. Summary of All Changes Made
+
+| File                     | Change                                                                                                                                                                   |
+|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pcap_vs_csv_diff.py`    | Built from scratch; tshark-only extraction; fixed separator α → `\|`; per-feature MISSING/EXTRA/DIFF breakdown; batch runner over all 53 PCAP/CSV pairs                  |
+| `data_extraction.py`     | Removed pyshark entirely; added `FileCapture`, `LiveCapture`, `load_pcap_as_dataframe`, `LivePreprocessor`; added `DualModelRouter` for protocol-based inference routing |
+| `offline_testing.py`     | Replaced pyshark loop with `FileCapture` + `DualModelRouter`; added `OfflinePreprocessor`; added `diagnose_vs_labels()`                                                  |
+| `model_utilities.py`     | Replaced single `LABEL_MAP` with `TCP_LABEL_MAP` + `QUIC_LABEL_MAP`; added `extract_data_tcp()` and `extract_data_quic()` with protocol-split logic                      |
+| `main_model.py`          | Dual-branch training: trains `XGB_Blackwall_TCP` and `XGB_Blackwall_QUIC` separately with correct `num_class` per branch                                                 |
+| `dataset_regenerator.py` | New script: regenerates CSVs from original PCAPs using tshark 4.6.0 with `-E occurrence=a` to eliminate ghost values; validates fields against tshark's supported list   |

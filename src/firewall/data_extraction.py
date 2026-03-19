@@ -1,10 +1,10 @@
 """
 data_extraction.py
 ==================
-Live traffic capture and feature extraction using tshark directly.
+Live traffic capture, feature extraction, and classification using tshark.
 No pyshark — tshark is invoked as a subprocess on the network interface,
 its stdout is read line-by-line, and each row is parsed, preprocessed,
-and pushed to a queue for the firewall/classifier to consume.
+classified by the DualModelRouter, and pushed to a queue.
 
 Architecture
 ------------
@@ -12,10 +12,19 @@ Architecture
       └─ background thread runs _capture_loop()
              └─ spawns:  tshark -i <iface> -T fields -E separator=| ...
              └─ reads stdout line by line
-             └─ for each complete row: parse → preprocess → queue.put()
+             └─ for each row: parse → preprocess → route → queue.put()
 
   Consumer (firewall):
-      src_ip, preprocessed_df = capture.queue.get()
+      source_ip, label = capture.queue.get()
+      # label is a string e.g. "Normal", "http-flood", "quic-loris"
+
+Dual-model routing
+------------------
+  quic.packet_length > 0  →  QUIC model
+  quic.packet_length == 0 →  TCP model
+
+  This mirrors the training-time protocol split and ensures each packet
+  is classified only by the model trained on its protocol family.
 
 TLS decryption
 --------------
@@ -188,6 +197,122 @@ class LivePreprocessor:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#   DualModelRouter
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Column used to discriminate TCP vs QUIC in the preprocessed DataFrame.
+# After fill_missing + MinMax scaling: null → 0.0, present → float in (0, 1].
+_QUIC_COL = "quic.packet_length"
+
+
+class DualModelRouter:
+    """
+    Routes a preprocessed packet DataFrame to either the TCP or the QUIC
+    classifier and returns the predicted label string.
+
+    Routing rule
+    ------------
+      quic.packet_length > 0  →  QUIC model
+      quic.packet_length == 0 →  TCP model
+
+    This mirrors the training-time protocol split performed in
+    model_utilities.py so each packet is always classified by the model
+    that was trained on its protocol family.
+
+    TCP model classes : Normal, http-loris, http-smuggle,
+                        http2-concurrent, http2-pause
+    QUIC model classes: Normal, http-flood, quic-flood, http-loris,
+                        quic-loris, fuzzing, quic-enc
+
+    Parameters
+    ----------
+    tcp_model_path  : path to XGB_Blackwall_TCP_classifier.joblib
+    quic_model_path : path to XGB_Blackwall_QUIC_classifier.joblib
+    """
+
+    def __init__(
+            self,
+            tcp_model_path: str | Path,
+            quic_model_path: str | Path,
+    ) -> None:
+        tcp_ckpt = joblib.load(tcp_model_path)
+        quic_ckpt = joblib.load(quic_model_path)
+
+        self._tcp_model = tcp_ckpt["model"]
+        self._tcp_labels = list(tcp_ckpt["encoder"].classes_)
+
+        self._quic_model = quic_ckpt["model"]
+        self._quic_labels = list(quic_ckpt["encoder"].classes_)
+
+        print(f"[Router] TCP  model — classes: {self._tcp_labels}")
+        print(f"[Router] QUIC model — classes: {self._quic_labels}")
+
+    def predict(self, df: pd.DataFrame) -> str:
+        """
+        Classify a single preprocessed packet row and return the label string.
+
+        Parameters
+        ----------
+        df : single-row DataFrame produced by LivePreprocessor.preprocess()
+
+        Returns
+        -------
+        str — e.g. "Normal", "http-flood", "http-smuggle"
+        """
+        X = df.values.astype(float)
+        if self._is_quic(df):
+            return self._quic_labels[int(self._quic_model.predict(X)[0])]
+        return self._tcp_labels[int(self._tcp_model.predict(X)[0])]
+
+    def predict_batch(self, df: pd.DataFrame) -> list[str]:
+        """
+        Classify a full DataFrame of preprocessed packets in two batched model
+        calls (one per protocol) and return labels aligned to df.index order.
+
+        Parameters
+        ----------
+        df : multi-row preprocessed DataFrame
+
+        Returns
+        -------
+        list[str] — predicted labels, same order as df rows
+        """
+        labels = [""] * len(df)
+        quic_mask = self._is_quic_series(df)
+        quic_idx = df.index[quic_mask].tolist()
+        tcp_idx = df.index[~quic_mask].tolist()
+
+        if quic_idx:
+            preds = self._quic_model.predict(df.loc[quic_idx].values.astype(float))
+            for i, row_idx in enumerate(quic_idx):
+                labels[df.index.get_loc(row_idx)] = self._quic_labels[int(preds[i])]
+
+        if tcp_idx:
+            preds = self._tcp_model.predict(df.loc[tcp_idx].values.astype(float))
+            for i, row_idx in enumerate(tcp_idx):
+                labels[df.index.get_loc(row_idx)] = self._tcp_labels[int(preds[i])]
+
+        return labels
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _is_quic(self, df: pd.DataFrame) -> bool:
+        """True if the single-row DataFrame represents a QUIC packet."""
+        if _QUIC_COL not in df.columns:
+            return False
+        try:
+            return float(df[_QUIC_COL].iloc[0]) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _is_quic_series(self, df: pd.DataFrame) -> pd.Series:
+        """Boolean Series: True for rows where quic.packet_length > 0."""
+        if _QUIC_COL not in df.columns:
+            return pd.Series(False, index=df.index)
+        return pd.to_numeric(df[_QUIC_COL], errors="coerce").fillna(0) > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #   FileCapture  — offline / PCAP-file iterator
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -312,9 +437,9 @@ class FileCapture:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_pcap_as_dataframe(
-    pcap_path: str | Path,
-    keylog: str | Path | None = None,
-    tshark_bin: str | None = None,
+        pcap_path: str | Path,
+        keylog: str | Path | None = None,
+        tshark_bin: str | None = None,
 ) -> tuple[pd.DataFrame, list[str | None]]:
     """
     Run tshark on an entire PCAP in one shot and return a full DataFrame of
@@ -430,12 +555,14 @@ def load_pcap_as_dataframe(
 class LiveCapture:
     """
     Captures live packets from a network interface using tshark, extracts
-    the 46 model features, preprocesses each row, and puts it on a queue.
+    the 46 model features, preprocesses each row, classifies it via the
+    DualModelRouter, and puts the result on a queue.
 
     Parameters
     ----------
     interface    : network interface name (e.g. "eth0", "en0")
     preprocessor : fitted LivePreprocessor instance
+    router       : fitted DualModelRouter instance
     bpf_filter   : optional BPF capture filter string (e.g. "tcp port 443")
     keylog_file  : path to NSS SSLKEYLOGFILE for live TLS decryption.
                    Defaults to /tmp/sslkeys.log — set SSLKEYLOGFILE in the
@@ -446,16 +573,17 @@ class LiveCapture:
     Queue items
     -----------
     Each item placed on self.queue is:
-        (source_ip: str | None, preprocessed_df: pd.DataFrame)
+        (source_ip: str | None, label: str)
 
-    source_ip     : raw IP string from ip.src or ipv6.src, for firewall use
-    preprocessed_df : single-row DataFrame ready for model.predict()
+    source_ip : raw IP string from ip.src or ipv6.src, for firewall use
+    label     : predicted class string, e.g. "Normal", "http-flood"
     """
 
     def __init__(
             self,
             interface: str,
             preprocessor: LivePreprocessor,
+            router: DualModelRouter,
             bpf_filter: Optional[str] = None,
             keylog_file: Optional[str] = None,
             tshark_bin: Optional[str] = None,
@@ -465,6 +593,7 @@ class LiveCapture:
 
         self.interface = interface
         self.preprocessor = preprocessor
+        self.router = router
         self.bpf_filter = bpf_filter
         self.tshark_bin = tshark_bin or find_tshark()
         self.queue: queue.Queue = queue.Queue()
@@ -537,8 +666,6 @@ class LiveCapture:
 
                 # ── first non-empty line is the header ────────────────────
                 if not header_cols:
-                    # Strip quotes and swap separator — no comma→plus here
-                    # since header contains column names, not numeric values
                     clean_header = raw_line.replace('"', "").replace(_SEP, ",")
                     header_cols = [c.strip() for c in clean_header.split(",")]
                     print(f"[LiveCapture] tshark started: {len(header_cols)} columns")
@@ -552,20 +679,19 @@ class LiveCapture:
                 if source_ip:
                     source_ip = source_ip.strip() or None
 
-                # ── post-process and parse ────────────────────────────────
-                processed_line = postprocess_row(raw_line)
-                row = parse_row(header_cols, processed_line)
-                df = row_to_dataframe(row)
-
-                # ── preprocess and enqueue ────────────────────────────────
+                # ── post-process, preprocess, classify, enqueue ───────────
                 try:
+                    processed_line = postprocess_row(raw_line)
+                    row = parse_row(header_cols, processed_line)
+                    df = row_to_dataframe(row)
                     preprocessed = self.preprocessor.preprocess(df)
-                    self.queue.put((source_ip, preprocessed))
+                    label = self.router.predict(preprocessed)
+                    self.queue.put((source_ip, label))
                     seen += 1
                 except Exception as exc:
                     errors += 1
                     if errors <= 10:
-                        print(f"[LiveCapture] preprocess error (pkt {seen + errors}): {exc}")
+                        print(f"[LiveCapture] error (pkt {seen + errors}): {exc}")
 
         except Exception as exc:
             print(f"[LiveCapture] fatal loop error: {exc}")
@@ -575,7 +701,7 @@ class LiveCapture:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
-            print(f"[LiveCapture] stopped — queued={seen}, errors={errors}")
+            print(f"[LiveCapture] stopped — classified={seen}, errors={errors}")
 
     # ── public API ────────────────────────────────────────────────────────────
 

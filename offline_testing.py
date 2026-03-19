@@ -14,21 +14,18 @@ Pipeline
        fill_missing -> resolve_compound -> one_hot_encode -> minmax_scale
   3. The preprocessed row is fed to the trained classifier.
 """
-
 LABEL_MAP = {
     "Normal": "Normal",
-    "http-flood": "DDoS-flooding",
-    "http-stream": "DDoS-flooding",
-    "quic-flood": "DDoS-flooding",
-    "http-loris": "DDoS-loris",
-    "quic-loris": "DDoS-loris",
-    "fuzzing": "Transport-layer",
-    "quic-enc": "Transport-layer",
-    "http-smuggle": "HTTP/2-attacks",
-    "http2-concurrent": "HTTP/2-attacks",
-    "http2-pause": "HTTP/2-attacks",
+    "http-flood": "http-flood",
+    "quic-flood": "quic-flood",
+    "http-loris": "http-loris",
+    "quic-loris": "quic-loris",
+    "fuzzing": "fuzzing",
+    "quic-enc": "quic-enc",
+    "http-smuggle": "http-smuggle",
+    "http2-concurrent": "http2-concurrent",
+    "http2-pause": "http2-pause",
 }
-
 
 from pathlib import Path
 
@@ -39,12 +36,12 @@ from src.model.preprocessing.scaling import FLAG_COLS, TO_SCALE_COLUMNS
 from src.firewall.data_extraction import FileCapture, load_pcap_as_dataframe
 
 # ── paths — edit these to match your layout ──────────────────────────────────
-BASE_DIR     = Path(__file__).resolve().parent
-PCAP_PATH    = BASE_DIR / "src/model/dataset/1-http-flood/pcap1-caddy.pcap"
-MODEL_PATH   = BASE_DIR / "src/firewall/model/Blackwall.joblib"
-SCALER_PATH  = BASE_DIR / "src/firewall/model/scaler.joblib"
+BASE_DIR = Path(__file__).resolve().parent
+PCAP_PATH = BASE_DIR / "src/model/dataset/1-http-flood/pcap1-caddy.pcap"
+MODEL_PATH = BASE_DIR / "src/firewall/model/Blackwall.joblib"
+SCALER_PATH = BASE_DIR / "src/firewall/model/scaler.joblib"
 DATASET_PATH = BASE_DIR / "src/model/output/pcap-all-final.csv"
-KEYLOG_PATH  = BASE_DIR / "src/model/dataset/ssl keys/all.txt"
+KEYLOG_PATH = BASE_DIR / "src/model/dataset/ssl keys/all.txt"
 
 
 # =============================================================================
@@ -97,6 +94,7 @@ class OfflinePreprocessor:
                     return pd.eval(str(v))
                 except Exception:
                     return v
+
             df[col] = df[col].apply(_safe_eval)
         return df
 
@@ -130,15 +128,15 @@ class OfflinePreprocessor:
 # =============================================================================
 
 def run_static_test(
-    pcap_path: Path    = PCAP_PATH,
-    model_path: Path   = MODEL_PATH,
-    scaler_path: Path  = SCALER_PATH,
-    dataset_path: Path = DATASET_PATH,
-    keylog_path: Path  = KEYLOG_PATH,
+        pcap_path: Path = PCAP_PATH,
+        model_path: Path = MODEL_PATH,
+        scaler_path: Path = SCALER_PATH,
+        dataset_path: Path = DATASET_PATH,
+        keylog_path: Path = KEYLOG_PATH,
 ) -> None:
-    checkpoint  = joblib.load(model_path)
-    model       = checkpoint["model"]
-    encoder     = checkpoint["encoder"]
+    checkpoint = joblib.load(model_path)
+    model = checkpoint["model"]
+    encoder = checkpoint["encoder"]
     label_names = list(encoder.classes_)
 
     preprocessor = OfflinePreprocessor(
@@ -163,7 +161,7 @@ def run_static_test(
         try:
             processed = preprocessor.preprocess(df)
             X = processed.values.astype(float)
-            idx   = int(model.predict(X)[0])
+            idx = int(model.predict(X)[0])
             label = label_names[idx]
             preds[label] = preds.get(label, 0) + 1
             classified += 1
@@ -183,12 +181,12 @@ def run_static_test(
 
 
 def diagnose_vs_labels(
-    pcap_path: Path  = PCAP_PATH,
-    label_csv: Path  = PCAP_PATH.parent / (PCAP_PATH.stem + "-l.csv"),
-    scaler_path: Path = SCALER_PATH,
-    dataset_path: Path = DATASET_PATH,
-    keylog_path: Path  = KEYLOG_PATH,
-    model_path: Path   = MODEL_PATH,
+        pcap_path: Path = PCAP_PATH,
+        label_csv: Path = PCAP_PATH.parent / (PCAP_PATH.stem + "-l.csv"),
+        scaler_path: Path = SCALER_PATH,
+        dataset_path: Path = DATASET_PATH,
+        keylog_path: Path = KEYLOG_PATH,
+        model_path: Path = MODEL_PATH,
 ) -> None:
     """
     Load the raw features from the PCAP, attach the ground-truth labels from
@@ -216,10 +214,10 @@ def diagnose_vs_labels(
         print(f"WARNING: row count mismatch — PCAP={len(raw_df)}, CSV={len(labels_df)}")
         print("Truncating to shorter length. Results may be unreliable.")
         n = min(len(raw_df), len(labels_df))
-        raw_df    = raw_df.iloc[:n].reset_index(drop=True)
+        raw_df = raw_df.iloc[:n].reset_index(drop=True)
         labels_df = labels_df.iloc[:n].reset_index(drop=True)
 
-    raw_df["Label"]       = labels_df["Label"].values
+    raw_df["Label"] = labels_df["Label"].values
     raw_df["Label_mapped"] = raw_df["Label"].map(LABEL_MAP)
 
     # ── 1. feature presence per class ────────────────────────────────────────
@@ -236,14 +234,14 @@ def diagnose_vs_labels(
     # ── 2. prediction accuracy vs ground truth ────────────────────────────────
     print("\n=== Prediction accuracy vs ground truth ===")
     preprocessor = OfflinePreprocessor(dataset_csv=dataset_path, scaler_joblib=scaler_path)
-    checkpoint   = joblib.load(model_path)
-    model        = checkpoint["model"]
-    encoder      = checkpoint["encoder"]
-    label_names  = list(encoder.classes_)
+    checkpoint = joblib.load(model_path)
+    model = checkpoint["model"]
+    encoder = checkpoint["encoder"]
+    label_names = list(encoder.classes_)
 
     processed = preprocessor.preprocess(raw_df.drop(columns=["Label", "Label_mapped"]))
-    X         = processed.values.astype(float)
-    indices   = model.predict(X)
+    X = processed.values.astype(float)
+    indices = model.predict(X)
     predicted = [label_names[int(i)] for i in indices]
 
     raw_df["Predicted"] = predicted
@@ -263,6 +261,7 @@ def diagnose_vs_labels(
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "diagnose":
         diagnose_vs_labels()
     else:

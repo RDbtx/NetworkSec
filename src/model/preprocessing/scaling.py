@@ -70,7 +70,7 @@ def resolve_compound_values(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].apply(lambda v: pd.eval(v) if isinstance(v, str) else v)
         except Exception:
             pass
-        print(f" - Progress: {i}/{total} | calculations in {col} done!")
+        print(f" - Progress: {i:>2}/{total} | calculations in {col} done!")
     print("Done resolving all compound values!")
     return df
 
@@ -85,7 +85,7 @@ def one_hot_encode(df: pd.DataFrame) -> pd.DataFrame:
     Outputs:
     - df: DataFrame with FLAG_COLS replaced by their OHE binary columns.
     """
-    print("Starting One-Hot Encoding...")
+    print("\nStarting One-Hot Encoding...")
     df = pd.get_dummies(df, columns=FLAG_COLS)
     print("Done One-Hot Encoding!")
     return df
@@ -135,8 +135,7 @@ def scaling(csv_dir: str) -> None:
     """
     print("\n####### Scaling #######")
     output_path = os.path.join(os.path.dirname(csv_dir), "pcap-all-final.csv")
-
-    print("\nReading:", csv_dir)
+    print("Reading:", csv_dir)
     df = pd.read_csv(csv_dir, sep=",", on_bad_lines='skip', encoding="ISO-8859-1", low_memory=False)
     print("Done reading CSV!")
 
